@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- ВЕРСІЯ 2.4.0 · оновлено 26.11.2026 00:10 -->
+<!-- ВЕРСІЯ 2.5.2 · оновлено 26.11.2026 01:12 -->
 <html lang="uk">
 <head>
 <meta charset="utf-8">
@@ -22,6 +22,7 @@
   --r1:6px; --r2:10px;
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0;background:var(--bg);color:var(--text);font:var(--fs-md)/1.45 var(--font-ui);-webkit-text-size-adjust:100%}
 button,input,select{font:inherit;color:inherit}
 .wrap{max-width:980px;margin:0 auto;padding:0 var(--s4) var(--s6)}
@@ -228,15 +229,17 @@ details summary{cursor:pointer;color:var(--muted);font-size:var(--fs-sm);margin-
       <label class="f">Частково<input type="color" id="cPartial"></label>
       <label class="f">Спокійно<input type="color" id="cCalm"></label>
       <label class="f">Немає даних<input type="color" id="cError"></label>
+      <label class="f">Прапор: синій<input type="color" id="cFlagBlue"></label>
+      <label class="f">Прапор: жовтий<input type="color" id="cFlagYellow"></label>
     </div>
   </div>
   <div class="panel">
     <h2>Анімація</h2>
     <div class="grid2">
       <label class="f">Тривога
-        <select id="alertAnim"><option value="0">пульсація</option><option value="1">рівне світіння</option><option value="2">блимання</option><option value="3">серцебиття</option><option value="4">хвиля по карті</option><option value="5">полум'я</option><option value="6">повільне дихання</option><option value="7">стробоскоп</option></select></label>
+        <select id="alertAnim"><option value="0">пульсація</option><option value="1">рівне світіння</option><option value="2">блимання</option><option value="3">серцебиття</option><option value="5">полум'я</option><option value="6">повільне дихання</option><option value="7">стробоскоп</option><option value="4">хвиля за номерами світлодіодів</option><optgroup label="За розташуванням на карті"><option value="8">хвиля із заходу на схід</option><option value="9">хвиля з півночі на південь</option><option value="10">кола від центру країни</option><option value="11">радар</option></optgroup></select></label>
       <label class="f">Спокійний стан
-        <select id="calmAnim"><option value="0">рівне світіння</option><option value="1">дихання</option><option value="2">хвиля по карті</option><option value="3">зорі</option><option value="4">протифаза до тривоги</option><option value="5">легке мерехтіння</option></select></label>
+        <select id="calmAnim"><option value="0">рівне світіння</option><option value="1">дихання</option><option value="3">зорі</option><option value="4">протифаза до тривоги</option><option value="5">легке мерехтіння</option><option value="2">хвиля за номерами світлодіодів</option><optgroup label="За розташуванням на карті"><option value="6">хвиля із заходу на схід</option><option value="7">кола від центру країни</option><option value="8">радар</option></optgroup></select></label>
       <label class="f">Швидкість <span class="mono" id="animSpeedV"></span><input type="range" id="animSpeed" min="1" max="5"></label>
       <label class="f">Спалах, коли тривога починається або закінчується
         <select id="changeFx"><option value="1">так</option><option value="0">ні</option></select></label>
@@ -472,8 +475,8 @@ $("details").addEventListener("toggle",e=>{if(e.target.open)renderTable()});
 $("#ledCount").onchange=()=>{const n=Math.max(1,Math.min(300,parseInt($("#ledCount").value)||1));while(map.length<n)map.push(0);map.length=n;paintBind();paintLive()};
 
 // налаштування
-const F=["api","interval","pin","bright","calmMode","calmLevel","alertAnim","calmAnim","animSpeed","cRed","cYellow","cPartial","cCalm","cError","nightBright","nightFrom","nightTo"];
-const COL=["cRed","cYellow","cPartial","cCalm","cError"];
+const F=["api","interval","pin","bright","calmMode","calmLevel","alertAnim","calmAnim","animSpeed","cRed","cYellow","cPartial","cCalm","cError","cFlagBlue","cFlagYellow","nightBright","nightFrom","nightTo"];
+const COL=["cRed","cYellow","cPartial","cCalm","cError","cFlagBlue","cFlagYellow"];
 function fillCfg(){
   F.forEach(k=>$("#"+k).value=cfg[k]);
   $("#nightOn").value=cfg.nightOn?1:0;
@@ -496,7 +499,7 @@ function runTest(s){
     .catch(()=>toast("Пристрій не відповідає"));
 }
 document.querySelectorAll("#testRow button").forEach(b=>b.onclick=()=>runTest(b.dataset.s));
-["alertAnim","calmAnim","animSpeed","changeFx","calmMode","calmLevel","bright","cRed","cYellow","cPartial","cCalm","cError"].forEach(k=>
+["alertAnim","calmAnim","animSpeed","changeFx","calmMode","calmLevel","bright","cRed","cYellow","cPartial","cCalm","cError","cFlagBlue","cFlagYellow"].forEach(k=>
   $("#"+k).addEventListener("change",()=>{if(testOn)runTest(testOn)}));
 $("#setSave").onclick=()=>{
   const b=formBody();
@@ -537,7 +540,8 @@ $("#fsBtn").onclick=()=>{const f=$("#fsFile").files[0];if(!f)return toast("Об�
   upload("/fs",new File([f],"index.html")).then(()=>{toast("Завантажено, оновлюю сторінку");setTimeout(()=>location.reload(),800)}).catch(()=>toast("Помилка"))};
 $("#otaSave").onclick=()=>api("/api/config",{otaRepo:$("#otaRepo").value.trim(),otaAuto:$("#otaAuto").value==="1"})
   .then(()=>{toast("Збережено");return load()}).catch(e=>toast(e.message==="400"?"Формат: користувач/репозиторій":"Помилка збереження"));
-$("#otaCheck").onclick=()=>api("/api/ota/check",{}).then(()=>{$("#otaInfo").textContent="Перевіряю…";setTimeout(poll,2500);setTimeout(poll,6000)}).catch(()=>toast("Пристрій не відповідає"));
+$("#otaCheck").onclick=()=>api("/api/config",{otaRepo:$("#otaRepo").value.trim(),otaAuto:$("#otaAuto").value==="1"})
+  .then(()=>api("/api/ota/check",{})).then(()=>{$("#otaInfo").textContent="Перевіряю…";setTimeout(poll,2500);setTimeout(poll,6000)}).catch(e=>toast(e.message==="400"?"Формат: користувач/репозиторій":"Пристрій не відповідає"));
 $("#otaInstall").onclick=()=>api("/api/ota/install",{}).then(()=>{$("#otaInstall").hidden=true;$("#otaInfo").textContent="Встановлюю… Не вимикайте живлення."}).catch(()=>toast("Пристрій не відповідає"));
 $("#rebootBtn").onclick=()=>{api("/api/reboot",{}).catch(()=>{});toast("Перезавантаження…")};
 
@@ -555,7 +559,7 @@ function paintState(){
   const kv=(o)=>Object.entries(o).map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join("");
   const act=R.filter(r=>"ARY".includes(stOf(r[0]))).length, part=R.filter(r=>stOf(r[0])==="P").length;
   $("#kvState").innerHTML=kv({"Останнє оновлення":fmtAge(s.age),"Код відповіді":s.http,"Успішних / помилок":s.ok+" / "+s.err,"Тривога в областях":s.alerts?act+" повністю, "+part+" частково":"—"});
-  $("#kvSys").innerHTML=kv({"Прошивка":"v"+s.ver,"Веб-інтерфейс":"v2.4.0 · 26.11.2026 00:10","Мережа":s.wifi?s.ssid:"—","IP":s.wifi?s.ip:"192.168.4.1","Сигнал":s.wifi?s.rssi+" dBm":"—","Працює":fmtUp(s.uptime),"Чип":s.chip,"Вільна пам'ять":Math.round(s.heap/1024)+" КБ","Час NTP":s.timeOk?"синхронізовано":"—","Яскравість зараз":s.bright});
+  $("#kvSys").innerHTML=kv({"Прошивка":"v"+s.ver,"Веб-інтерфейс":"v2.5.2 · 26.11.2026 01:12","Мережа":s.wifi?s.ssid:"—","IP":s.wifi?s.ip:"192.168.4.1","Сигнал":s.wifi?s.rssi+" dBm":"—","Працює":fmtUp(s.uptime),"Чип":s.chip,"Вільна пам'ять":Math.round(s.heap/1024)+" КБ","Час NTP":s.timeOk?"синхронізовано":"—","Яскравість зараз":s.bright,"Світлодіоди":s.led?s.led.count+" шт. на GPIO "+s.led.pin:"—","Кадрів показано":s.led?s.led.frames+(s.led.busy?" (зупинено)":""):"—","Запас стека / причина запуску":s.led?s.led.stack+" / "+s.reset:"—","Збірка":s.build||"—"});
   const o=s.ota||{},ot={checking:"Перевіряю…",uptodate:"Встановлено останню версію (v"+o.latest+").",available:"Доступна версія v"+o.latest+", зараз встановлено v"+s.ver+".",
     installing:"Встановлюю"+(o.msg?": "+o.msg:"… Не вимикайте живлення."),error:"Помилка: "+o.msg};
   $("#otaInfo").textContent=ot[o.st]||"";$("#otaInstall").hidden=o.st!=="available";

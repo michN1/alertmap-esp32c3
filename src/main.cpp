@@ -1,4 +1,4 @@
-// ВЕРСІЯ 2.4.0 · оновлено 26.11.2026 00:10
+// ВЕРСІЯ 2.5.2 · оновлено 26.11.2026 01:12
 // (анімації тривоги та спокою, перегляд на карті, оновлення з GitHub, райони)
 //
 // Карта тривог v2 — один код для ESP32-S3 (два ядра) та ESP32-C3 (одне ядро)
@@ -64,11 +64,17 @@ struct Settings {
   uint32_t cYellow     = 0xFF6000;
   uint32_t cPartial    = 0xFFB000;
   uint32_t cError      = 0x8000FF;
+  uint32_t cFlagBlue   = 0x0040FF;   // прапор у спокійному стані
+  uint32_t cFlagYellow = 0xFFE000;   // лимонний, щоб не зливався з «частково»
   uint16_t ledUid[MAX_LEDS];     // ledUid[led] = UID області чи району, 0 — не прив'язано
 };
 
 Settings cfg;
 uint8_t ledParent[MAX_LEDS];     // UID області, якщо світлодіод прив'язаний до району; інакше 0
+// Положення кожного світлодіода на карті (за областю, до якої він належить)
+uint8_t ledX[MAX_LEDS], ledY[MAX_LEDS];   // 0..255: захід→схід, північ→південь
+uint8_t ledDist[MAX_LEDS];                // відстань від центру країни, 0..255
+uint8_t ledAng[MAX_LEDS];                 // кут навколо центру, 0..255 на повне коло
 Preferences prefs;
 SemaphoreHandle_t mux;           // захищає рядки в cfg і структуру net
 
@@ -100,7 +106,18 @@ static uint8_t parentOf(uint16_t uid) {
 }
 
 void rebuildParents() {
-  for (int i = 0; i < MAX_LEDS; i++) ledParent[i] = cfg.ledUid[i] ? parentOf(cfg.ledUid[i]) : 0;
+  for (int i = 0; i < MAX_LEDS; i++) {
+    const uint16_t uid = cfg.ledUid[i];
+    ledParent[i] = uid ? parentOf(uid) : 0;
+    // район бере положення своєї області
+    const uint8_t ob = ledParent[i] ? ledParent[i] : (uint8_t)(uid < 32 ? uid : 0);
+    ledX[i] = OBLAST_POS[ob][0];
+    ledY[i] = OBLAST_POS[ob][1];
+    const float dx = (float)ledX[i] - MAP_CENTER_X, dy = (float)ledY[i] - MAP_CENTER_Y;
+    const float dist = sqrtf(dx * dx + dy * dy) * 1.6f;
+    ledDist[i] = dist > 255 ? 255 : (uint8_t)dist;
+    ledAng[i] = (uint8_t)((atan2f(dy, dx) + PI) * (255.0f / (2.0f * PI)));
+  }
 }
 
 // За замовчуванням: перші 27 світлодіодів — області в порядку старої прошивки
@@ -135,6 +152,8 @@ void loadSettings() {
   cfg.cYellow     = prefs.getUInt("cYel", cfg.cYellow);
   cfg.cPartial    = prefs.getUInt("cPart", cfg.cPartial);
   cfg.cError      = prefs.getUInt("cErr", cfg.cError);
+  cfg.cFlagBlue   = prefs.getUInt("cFlB", cfg.cFlagBlue);
+  cfg.cFlagYellow = prefs.getUInt("cFlY", cfg.cFlagYellow);
   defaultMap();
   if (prefs.getBytesLength("umap") == sizeof(cfg.ledUid)) prefs.getBytes("umap", cfg.ledUid, sizeof(cfg.ledUid));
   prefs.end();
@@ -170,6 +189,8 @@ void saveSettings() {
   prefs.putUInt("cYel", cfg.cYellow);
   prefs.putUInt("cPart", cfg.cPartial);
   prefs.putUInt("cErr", cfg.cError);
+  prefs.putUInt("cFlB", cfg.cFlagBlue);
+  prefs.putUInt("cFlY", cfg.cFlagYellow);
   prefs.end();
 }
 
@@ -490,8 +511,8 @@ static inline uint8_t tri(uint32_t t, uint32_t periodMs) {
   return (p < half ? p : periodMs - p) * 255UL / half;
 }
 
-#define ALERT_ANIM_COUNT 8
-#define CALM_ANIM_COUNT  6
+#define ALERT_ANIM_COUNT 12
+#define CALM_ANIM_COUNT  9
 
 // Яскравість тривожного світлодіода 0..255. i — номер світлодіода, t — час з урахуванням швидкості
 static uint8_t alertLevel(uint8_t anim, uint16_t i, uint32_t t) {
@@ -513,6 +534,15 @@ static uint8_t alertLevel(uint8_t anim, uint16_t i, uint32_t t) {
       uint32_t p = t % 1400;
       return (p < 480 && (p / 80) % 2 == 0) ? 255 : 15;
     }
+    // --- анімації з урахуванням розташування областей на карті ---
+    case 8:  return waveT(t + (255 - ledX[i]) * 6UL, 1600, 30, 255);    // хвиля із заходу на схід
+    case 9:  return waveT(t + (255 - ledY[i]) * 6UL, 1600, 30, 255);    // хвиля з півночі на південь
+    case 10: return waveT(t + (255 - ledDist[i]) * 7UL, 1800, 30, 255); // кола від центру країни
+    case 11: {                                                          // радар: промінь обертається навколо центру
+      const uint8_t rot = (t % 3200) * 256UL / 3200;
+      const uint8_t age = rot - ledAng[i];
+      return age < 110 ? 255 - age * 2 : 35;
+    }
   }
 }
 
@@ -529,6 +559,14 @@ static uint8_t calmFactor(uint8_t anim, uint16_t i, uint32_t t) {
     }
     case 4: return 255 - waveT(t, 1600, 0, 190);                  // протифаза до тривоги, як у старій прошивці
     case 5: return 150 + hash32(i * 104729UL + t / 110) % 106;    // легке мерехтіння
+    // --- з урахуванням розташування областей на карті ---
+    case 6: return waveT(t + (255 - ledX[i]) * 12UL, 4000, 70, 255);     // повільна хвиля із заходу на схід
+    case 7: return waveT(t + (255 - ledDist[i]) * 12UL, 4000, 70, 255);  // кола від центру країни
+    case 8: {                                                            // радар
+      const uint8_t rot = (t % 6000) * 256UL / 6000;
+      const uint8_t age = rot - ledAng[i];
+      return age < 120 ? 255 - age : 135;
+    }
   }
 }
 
@@ -636,7 +674,7 @@ void render() {
           const uint8_t ob = parent ? parent : (uint8_t)(uid < 32 ? uid : 0);
           const bool blue = (FLAG_BLUE_MASK >> ob) & 1;
           const uint8_t k = (uint16_t)calm * calmFactor(cfg.calmAnim, i, t) / 255;
-          if (cfg.calmMode == 0)      c = scaleColor(blue ? 0x0040FF : 0xFFB400, k);
+          if (cfg.calmMode == 0)      c = scaleColor(blue ? cfg.cFlagBlue : cfg.cFlagYellow, k);
           else if (cfg.calmMode == 1) c = scaleColor(cfg.cCalm, k);
           break;
         }
@@ -663,6 +701,9 @@ void render() {
   strip.show();
 }
 
+volatile uint32_t ledFrames = 0;                 // лічильник кадрів, для діагностики
+TaskHandle_t ledHandle = nullptr;
+
 void ledTask(void *) {
   TickType_t last = xTaskGetTickCount();
   bool blanked = false;
@@ -674,6 +715,7 @@ void ledTask(void *) {
       blanked = false;
       render();
     }
+    ledFrames++;
     vTaskDelayUntil(&last, pdMS_TO_TICKS(FRAME_MS));
   }
 }
@@ -784,6 +826,14 @@ void handleState() {
   d["timeOk"] = timeOk();
   d["bright"] = currentBrightness();
   d["test"]   = mode == Mode::Test;
+  // діагностика світлодіодів
+  d["led"]["pin"]    = cfg.ledPin;
+  d["led"]["count"]  = strip.numPixels();
+  d["led"]["frames"] = (uint32_t)ledFrames;
+  d["led"]["busy"]   = (bool)otaBusy;
+  d["led"]["stack"]  = ledHandle ? (uint32_t)uxTaskGetStackHighWaterMark(ledHandle) : 0;
+  d["reset"]  = (int)esp_reset_reason();
+  d["build"]  = String(__DATE__ " " __TIME__) + ", SDK " + ESP.getSdkVersion();
   sendJson(d);
 }
 
@@ -816,6 +866,8 @@ void handleGetConfig() {
   d["cYellow"]     = hex6(cfg.cYellow);
   d["cPartial"]    = hex6(cfg.cPartial);
   d["cError"]      = hex6(cfg.cError);
+  d["cFlagBlue"]   = hex6(cfg.cFlagBlue);
+  d["cFlagYellow"] = hex6(cfg.cFlagYellow);
   d["ssid"]        = cfg.ssid;
   JsonArray m = d["map"].to<JsonArray>();
   for (uint16_t i = 0; i < cfg.ledCount; i++) m.add(cfg.ledUid[i]);
@@ -885,6 +937,8 @@ void handleSetConfig() {
   cfg.cYellow  = parseHex(d["cYellow"].as<const char *>(),  cfg.cYellow);
   cfg.cPartial = parseHex(d["cPartial"].as<const char *>(), cfg.cPartial);
   cfg.cError   = parseHex(d["cError"].as<const char *>(),   cfg.cError);
+  cfg.cFlagBlue   = parseHex(d["cFlagBlue"].as<const char *>(),   cfg.cFlagBlue);
+  cfg.cFlagYellow = parseHex(d["cFlagYellow"].as<const char *>(), cfg.cFlagYellow);
 
   // ?save=0 — застосувати лише до наступного перезавантаження (для перегляду анімацій)
   if (server.arg("save") != "0") saveSettings();
@@ -1108,7 +1162,7 @@ void setup() {
   snprintf(devName, sizeof(devName), "AlertMap-%02X%02X", (uint8_t)(mac >> 32), (uint8_t)(mac >> 40));
 
   // Анімація стартує одразу, ще до підключення до мережі
-  xTaskCreatePinnedToCore(ledTask, "led", 4096, nullptr, 2, nullptr, CORE_LED);
+  xTaskCreatePinnedToCore(ledTask, "led", 8192, nullptr, 2, &ledHandle, CORE_LED);
 
   WiFi.persistent(false);                        // облікові дані зберігаємо самі, в NVS
   WiFi.setHostname(devName);
@@ -1129,7 +1183,8 @@ void setup() {
 
   setupServer();
   xTaskCreatePinnedToCore(netTask, "net", 16384, nullptr, 1, nullptr, CORE_NET);
-  Serial.printf("[sys] %s v%s готово\n", devName, FW_VERSION);
+  Serial.printf("[sys] %s v%s готово, причина запуску %d, світлодіодів %u на GPIO %u\n", devName, FW_VERSION,
+                (int)esp_reset_reason(), (unsigned)cfg.ledCount, (unsigned)cfg.ledPin);
 }
 
 void loop() {
