@@ -1,0 +1,576 @@
+<!doctype html>
+<!-- ВЕРСІЯ 2.4.0 · оновлено 26.11.2026 00:10 -->
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Карта тривог</title>
+<style>
+:root{
+  /* колір */
+  --bg:#0d0f12; --surface:#15181d; --surface-2:#1c2026; --line:#2a2f37; --line-strong:#3a414b;
+  --text:#ebe8e2; --muted:#8d929b; --faint:#5d636c;
+  --accent:#f0c23a; --accent-ink:#1a1606;
+  --st-calm:#22324d; --st-red:#e5352b; --st-yellow:#ef7d16; --st-partial:#d9a21b; --st-stale:#3b3f46; --st-ok:#4fb477;
+  /* типографіка */
+  --font-ui:"Segoe UI Variable Text","SF Pro Text",-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --font-display:"Bahnschrift","DIN Alternate","Arial Narrow",var(--font-ui);
+  --font-mono:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  --fs-xs:12px; --fs-sm:13px; --fs-md:15px; --fs-lg:19px; --fs-xl:26px;
+  /* відступи */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+  --r1:6px; --r2:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:var(--fs-md)/1.45 var(--font-ui);-webkit-text-size-adjust:100%}
+button,input,select{font:inherit;color:inherit}
+.wrap{max-width:980px;margin:0 auto;padding:0 var(--s4) var(--s6)}
+
+/* верхня панель */
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line)}
+header .wrap{padding-bottom:0}
+.top{display:flex;align-items:center;gap:var(--s3);padding:var(--s3) 0;min-width:0}
+.brand{font-family:var(--font-display);font-size:var(--fs-lg);letter-spacing:.02em;white-space:nowrap}
+.pill{display:inline-flex;align-items:center;gap:var(--s2);margin-left:auto;padding:var(--s1) var(--s3);border:1px solid var(--line);border-radius:999px;font:var(--fs-xs)/1.4 var(--font-mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none}
+.dot.ok{background:var(--st-ok)} .dot.bad{background:var(--st-red)} .dot.warn{background:var(--st-yellow)}
+nav{display:flex;gap:var(--s1);overflow-x:auto;scrollbar-width:none;padding-bottom:var(--s2)}
+nav::-webkit-scrollbar{display:none}
+nav button{flex:none;background:none;border:1px solid transparent;border-radius:var(--r1);padding:var(--s2) var(--s3);color:var(--muted);cursor:pointer;white-space:nowrap}
+nav button[aria-selected=true]{color:var(--text);border-color:var(--line-strong);background:var(--surface)}
+
+section{display:none;padding-top:var(--s5)}
+section.on{display:block}
+h2{font:600 var(--fs-lg)/1.3 var(--font-display);margin:0 0 var(--s3);letter-spacing:.01em}
+h3{font-size:var(--fs-sm);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:var(--s5) 0 var(--s3);font-weight:600}
+p.note{color:var(--muted);font-size:var(--fs-sm);margin:0 0 var(--s4);max-width:62ch}
+
+/* картограма */
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:var(--s5);align-items:start}
+@media (max-width:760px){.layout{grid-template-columns:minmax(0,1fr)}}
+.map{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));grid-auto-rows:minmax(0,1fr);gap:var(--s1);aspect-ratio:8/6}
+.tile{position:relative;border:1px solid transparent;border-radius:var(--r1);background:var(--st-calm);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2px;min-width:0;transition:transform .12s ease,border-color .12s}
+.tile:hover{border-color:var(--line-strong)}
+.tile.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.tile .ab{font:600 clamp(10px,2.1vw,14px)/1 var(--font-display);letter-spacing:.02em;white-space:nowrap}
+.tile .n{font:clamp(9px,1.6vw,11px)/1 var(--font-mono);color:rgba(255,255,255,.65);margin-top:3px;white-space:nowrap}
+.tile.red{background:var(--st-red)} .tile.yellow{background:var(--st-yellow);color:#1a0d00}
+.tile.yellow .n,.tile.partial .n{color:rgba(0,0,0,.6)}
+.tile.partial{background:var(--st-partial);color:#1a1200;border:2px dashed #1a1200}
+.tile.stale{background:var(--st-stale)}
+.tile.empty .n{color:var(--accent)}
+.bind .tile{background:var(--surface-2)}
+.bind .tile.has{background:#26313f}
+.legend{display:flex;flex-wrap:wrap;gap:var(--s3) var(--s4);margin-top:var(--s3);font-size:var(--fs-xs);color:var(--muted)}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:6px}
+
+/* панелі та форми */
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r2);padding:var(--s4)}
+.panel+.panel{margin-top:var(--s4)}
+.grid2>.panel{margin-top:0}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:var(--s1) var(--s3);font-size:var(--fs-sm)}
+.kv dt{color:var(--muted)} .kv dd{margin:0;font-family:var(--font-mono);text-align:right;overflow-wrap:anywhere}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:var(--s4)}
+label.f{display:flex;flex-direction:column;gap:6px;font-size:var(--fs-sm);color:var(--muted)}
+input[type=text],input[type=password],input[type=number],select{width:100%;background:var(--bg);border:1px solid var(--line-strong);border-radius:var(--r1);padding:10px var(--s3);color:var(--text);min-width:0}
+input:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px}
+input[type=range]{width:100%;accent-color:var(--accent)}
+input[type=color]{width:100%;height:40px;padding:2px;background:var(--bg);border:1px solid var(--line-strong);border-radius:var(--r1)}
+.row{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--s2);padding:10px var(--s4);border-radius:var(--r1);border:1px solid var(--line-strong);background:var(--surface-2);cursor:pointer;white-space:nowrap;flex:none}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.btn.ghost{background:none}
+.btn:disabled{opacity:.45;cursor:default}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:var(--s2) 0 var(--s3)}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 4px 3px 10px;border:1px solid var(--line-strong);border-radius:999px;font:var(--fs-sm) var(--font-mono)}
+.chip button{background:none;border:0;color:var(--muted);cursor:pointer;padding:0 6px;font-size:16px;line-height:1}
+.rrows{display:flex;flex-direction:column;margin-top:var(--s3);max-height:340px;overflow:auto;border-top:1px solid var(--line)}
+.rrow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--s3);align-items:center;padding:var(--s2) 0;border-bottom:1px solid var(--line)}
+.rrow .rn{font-size:var(--fs-sm)}
+.rrow .chips{margin:0;justify-content:flex-end}
+.stt{font:var(--fs-xs) var(--font-mono);color:var(--muted)}
+.stt.red{color:#ff6a61}.stt.yellow{color:var(--st-yellow)}.stt.partial{color:var(--st-partial)}
+.faint{color:var(--faint)}
+.pick{display:flex;flex-wrap:wrap;gap:var(--s2);margin:0 0 var(--s4)}
+.pick:empty{display:none}
+.pick .btn{padding:7px var(--s3);font-size:var(--fs-sm)}
+.muted{color:var(--muted)} .mono{font-family:var(--font-mono)}
+.big{font:600 var(--fs-xl)/1 var(--font-display)}
+.dirty{color:var(--accent);font-size:var(--fs-sm)}
+.toast{position:fixed;left:50%;bottom:var(--s5);transform:translateX(-50%);background:var(--text);color:var(--bg);padding:var(--s2) var(--s4);border-radius:var(--r1);font-size:var(--fs-sm);opacity:0;transition:opacity .2s;pointer-events:none;max-width:calc(100% - 32px)}
+.toast.on{opacity:1}
+.list{max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:var(--r1)}
+.list table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
+.list td{padding:6px var(--s3);border-bottom:1px solid var(--line)}
+.list td:first-child{font-family:var(--font-mono);color:var(--muted);width:72px}
+.list select{padding:6px var(--s2)}
+.nets{display:flex;flex-direction:column;gap:var(--s1);margin-bottom:var(--s4)}
+.nets button{display:flex;justify-content:space-between;gap:var(--s3);text-align:left;background:var(--bg);border:1px solid var(--line);border-radius:var(--r1);padding:10px var(--s3);cursor:pointer;min-width:0}
+.nets button span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nets button:hover{border-color:var(--muted)}
+details summary{cursor:pointer;color:var(--muted);font-size:var(--fs-sm);margin-top:var(--s4)}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <div class="top">
+    <div class="brand">Карта тривог</div>
+    <div class="pill" id="pill"><span class="dot" id="dot"></span><span id="pillTxt">завантаження…</span></div>
+  </div>
+  <nav role="tablist">
+    <button data-t="map" aria-selected="true">Карта</button>
+    <button data-t="bind">Прив'язка світлодіодів</button>
+    <button data-t="set">Налаштування</button>
+    <button data-t="wifi">Wi-Fi</button>
+    <button data-t="sys">Система</button>
+  </nav>
+</div></header>
+
+<main class="wrap">
+
+<!-- КАРТА -->
+<section id="t-map" class="on">
+  <div class="layout">
+    <div>
+      <div class="map" id="mapLive"></div>
+      <div class="legend">
+        <span><i style="background:var(--st-calm)"></i>спокійно</span>
+        <span><i style="background:var(--st-red)"></i>тривога / червоний рівень</span>
+        <span><i style="background:var(--st-yellow)"></i>жовтий рівень</span>
+        <span><i style="background:var(--st-partial)"></i>частково</span>
+        <span><i style="background:var(--st-stale)"></i>немає даних</span>
+      </div>
+    </div>
+    <div>
+      <div class="panel" id="regPanel">
+        <p class="note" style="margin:0">Торкніться області, щоб побачити стан її районів і прив'язані до них світлодіоди.</p>
+      </div>
+      <div class="panel">
+        <dl class="kv" id="kvState"></dl>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ПРИВ'ЯЗКА -->
+<section id="t-bind">
+  <div class="layout">
+    <div>
+      <div class="map bind" id="mapBind"></div>
+      <p class="note" style="margin-top:var(--s3)">Цифра на області — скільки світлодіодів прив'язано до неї та її районів. Жовтий нуль означає, що світлодіодів ще немає.</p>
+    </div>
+    <div>
+      <div class="panel" id="wizIdle">
+        <h2>Майстер прив'язки</h2>
+        <p class="note">Карта по черзі засвічує світлодіоди білим. Торкніться області, де він горить, а потім оберіть: уся область чи конкретний район.</p>
+        <div class="grid2" style="grid-template-columns:1fr 1fr">
+          <label class="f">Світлодіодів усього<input type="number" id="ledCount" min="1" max="300"></label>
+          <label class="f">Почати з №<input type="number" id="wizStart" min="0" value="0"></label>
+        </div>
+        <div class="row" style="margin-top:var(--s4)">
+          <button class="btn primary" id="wizGo">Почати</button>
+        </div>
+      </div>
+      <div class="panel" id="wizRun" hidden>
+        <div class="muted" style="font-size:var(--fs-sm)">Зараз світиться</div>
+        <div class="row" style="justify-content:space-between;margin:var(--s2) 0 var(--s3)">
+          <div class="big mono" id="wizLed">0</div>
+          <div class="muted mono" id="wizOf"></div>
+        </div>
+        <p class="note" id="wizHint"></p>
+        <div class="pick" id="wizPick"></div>
+        <div class="row">
+          <button class="btn" id="wizBack">Назад</button>
+          <button class="btn" id="wizSkip">Не прив'язувати</button>
+          <button class="btn ghost" id="wizStop">Завершити</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="row" style="justify-content:space-between">
+          <span id="mapDirty" class="dirty" hidden>Є незбережені зміни</span>
+          <span id="mapClean" class="muted" style="font-size:var(--fs-sm)">Прив'язку збережено</span>
+          <button class="btn primary" id="mapSave" disabled>Зберегти</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <details>
+    <summary>Список: світлодіод → область або район</summary>
+    <div class="list" style="margin-top:var(--s3)"><table id="mapTable"></table></div>
+  </details>
+</section>
+
+<!-- НАЛАШТУВАННЯ -->
+<section id="t-set">
+  <div class="panel">
+    <h2>Джерело даних</h2>
+    <div class="grid2">
+      <label class="f">Токен alerts.in.ua<input type="password" id="token" placeholder="не змінювати" autocomplete="off"><span id="tokenInfo" class="mono"></span></label>
+      <label class="f">Версія API
+        <select id="api"><option value="2">v2 — жовтий і червоний рівні</option><option value="1">v1 — лише «тривога / ні»</option></select></label>
+      <label class="f">Інтервал опитування, с<input type="number" id="interval" min="15" max="120"></label>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Світлодіоди</h2>
+    <div class="grid2">
+      <label class="f">GPIO стрічки<input type="number" id="pin" min="0" max="10"></label>
+      <label class="f">Яскравість <span class="mono" id="brightV"></span><input type="range" id="bright" min="1" max="255"></label>
+      <label class="f">Спокійний стан
+        <select id="calmMode"><option value="0">прапор (синій / жовтий)</option><option value="1">один колір</option><option value="2">вимкнено</option></select></label>
+      <label class="f">Яскравість спокійного стану, % <span class="mono" id="calmLevelV"></span><input type="range" id="calmLevel" min="0" max="100"></label>
+    </div>
+    <h3>Кольори</h3>
+    <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr))">
+      <label class="f">Тривога<input type="color" id="cRed"></label>
+      <label class="f">Жовтий рівень<input type="color" id="cYellow"></label>
+      <label class="f">Частково<input type="color" id="cPartial"></label>
+      <label class="f">Спокійно<input type="color" id="cCalm"></label>
+      <label class="f">Немає даних<input type="color" id="cError"></label>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Анімація</h2>
+    <div class="grid2">
+      <label class="f">Тривога
+        <select id="alertAnim"><option value="0">пульсація</option><option value="1">рівне світіння</option><option value="2">блимання</option><option value="3">серцебиття</option><option value="4">хвиля по карті</option><option value="5">полум'я</option><option value="6">повільне дихання</option><option value="7">стробоскоп</option></select></label>
+      <label class="f">Спокійний стан
+        <select id="calmAnim"><option value="0">рівне світіння</option><option value="1">дихання</option><option value="2">хвиля по карті</option><option value="3">зорі</option><option value="4">протифаза до тривоги</option><option value="5">легке мерехтіння</option></select></label>
+      <label class="f">Швидкість <span class="mono" id="animSpeedV"></span><input type="range" id="animSpeed" min="1" max="5"></label>
+      <label class="f">Спалах, коли тривога починається або закінчується
+        <select id="changeFx"><option value="1">так</option><option value="0">ні</option></select></label>
+    </div>
+    <h3>Перегляд на карті</h3>
+    <p class="note">Показує вибраний стан на всіх світлодіодах з налаштуваннями з цієї сторінки, навіть ще не збереженими. Через хвилину карта сама повернеться до живих даних.</p>
+    <div class="row" id="testRow">
+      <button class="btn" data-s="N">Спокійно</button>
+      <button class="btn" data-s="R">Тривога</button>
+      <button class="btn" data-s="Y">Жовтий рівень</button>
+      <button class="btn" data-s="P">Частково</button>
+      <button class="btn" data-s="M">Усе разом</button>
+      <button class="btn" data-s="E">Немає даних</button>
+      <button class="btn ghost" data-s="">Живі дані</button>
+    </div>
+    <p class="note" id="testInfo" style="margin:var(--s3) 0 0"></p>
+  </div>
+  <div class="panel">
+    <h2>Нічний режим</h2>
+    <div class="grid2">
+      <label class="f">Увімкнено<select id="nightOn"><option value="0">ні</option><option value="1">так</option></select></label>
+      <label class="f">Яскравість уночі <span class="mono" id="nightBrightV"></span><input type="range" id="nightBright" min="0" max="255"></label>
+      <label class="f">З години<input type="number" id="nightFrom" min="0" max="23"></label>
+      <label class="f">До години<input type="number" id="nightTo" min="0" max="23"></label>
+    </div>
+  </div>
+  <div class="row" style="margin-top:var(--s4)"><button class="btn primary" id="setSave">Зберегти налаштування</button></div>
+</section>
+
+<!-- WI-FI -->
+<section id="t-wifi">
+  <div class="panel" style="max-width:560px">
+    <h2>Підключення до Wi-Fi</h2>
+    <p class="note" id="wifiNow"></p>
+    <div class="row" style="justify-content:space-between;margin-bottom:var(--s3)">
+      <span class="muted" style="font-size:var(--fs-sm)">Доступні мережі</span>
+      <button class="btn ghost" id="scanBtn">Оновити список</button>
+    </div>
+    <div class="nets" id="nets"></div>
+    <div class="grid2">
+      <label class="f">Назва мережі<input type="text" id="ssid" autocomplete="off"></label>
+      <label class="f">Пароль<input type="password" id="pass" autocomplete="off"></label>
+    </div>
+    <div class="row" style="margin-top:var(--s4)"><button class="btn primary" id="wifiSave">Зберегти і перезавантажити</button></div>
+  </div>
+</section>
+
+<!-- СИСТЕМА -->
+<section id="t-sys">
+  <div class="grid2">
+    <div class="panel"><h2>Стан</h2><dl class="kv" id="kvSys"></dl></div>
+    <div class="panel">
+      <h2>Оновлення з файлу</h2>
+      <p class="note">Прошивка: файл firmware.bin з папки .pio/build. Веб-інтерфейс: цей index.html.</p>
+      <label class="f">Прошивка (.bin)<input type="file" id="fwFile" accept=".bin"></label>
+      <div class="row" style="margin:var(--s3) 0 var(--s4)"><button class="btn" id="fwBtn">Оновити прошивку</button><span class="muted mono" id="fwProg"></span></div>
+      <label class="f">Файл веб-інтерфейсу<input type="file" id="fsFile" accept=".html"></label>
+      <div class="row" style="margin-top:var(--s3)"><button class="btn" id="fsBtn">Завантажити</button></div>
+      <h3>Пристрій</h3>
+      <button class="btn ghost" id="rebootBtn">Перезавантажити</button>
+    </div>
+  </div>
+  <div class="panel" style="margin-top:var(--s4)">
+    <h2>Оновлення з GitHub</h2>
+    <p class="note">Пристрій бере з останнього релізу репозиторію файли version.json, прошивку для свого чипа та index.html.</p>
+    <div class="grid2">
+      <label class="f">Репозиторій<input type="text" id="otaRepo" placeholder="користувач/репозиторій" autocomplete="off" autocapitalize="off"></label>
+      <label class="f">Встановлювати автоматично (перевірка раз на добу)<select id="otaAuto"><option value="0">ні</option><option value="1">так</option></select></label>
+    </div>
+    <div class="row" style="margin-top:var(--s4)">
+      <button class="btn" id="otaSave">Зберегти</button>
+      <button class="btn" id="otaCheck">Перевірити оновлення</button>
+      <button class="btn primary" id="otaInstall" hidden>Встановити</button>
+    </div>
+    <p class="note" id="otaInfo" style="margin:var(--s3) 0 0"></p>
+  </div>
+</section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+// Області: [UID, повна назва, скорочення, колонка, рядок, висота]
+const R=[
+ [29,"АР Крим","Крим",5,5],[8,"Волинська","Вол",1,0],[4,"Вінницька","Він",3,1],[9,"Дніпропетровська","Дніп",5,2],
+ [28,"Донецька","Дон",6,2],[10,"Житомирська","Жит",3,0],[11,"Закарпатська","Зак",0,2],[12,"Запорізька","Зап",5,3],
+ [13,"Івано-Франківська","ІФ",1,2],[31,"м. Київ","Київ",4,1],[14,"Київська","Кщ",4,0],[15,"Кіровоградська","Кір",4,3],
+ [16,"Луганська","Луг",7,1],[27,"Львівська","Льв",0,1],[17,"Миколаївська","Мик",4,4],[18,"Одеська","Од",3,3,2],
+ [19,"Полтавська","Пол",5,1],[5,"Рівненська","Рів",2,0],[30,"м. Севастополь","Сев",4,5],[20,"Сумська","Сум",6,0],
+ [21,"Тернопільська","Тер",1,1],[22,"Харківська","Хар",6,1],[23,"Херсонська","Хер",5,4],[3,"Хмельницька","Хм",2,1],
+ [24,"Черкаська","Чк",4,2],[26,"Чернівецька","Чц",2,2],[25,"Чернігівська","Чг",5,0]];
+// Райони: UID області -> [[UID району, назва], ...]
+const RA={"3":[[135,"Кам'янець-Подільський"],[134,"Хмельницький"],[136,"Шепетівський"]],"4":[[36,"Вінницький"],[37,"Гайсинський"],[35,"Жмеринський"],[33,"Могилів-Подільський"],[32,"Тульчинський"],[34,"Хмільницький"]],"5":[[110,"Вараський"],[111,"Дубенський"],[112,"Рівненський"],[113,"Сарненський"]],"8":[[38,"Володимирський"],[41,"Камінь-Каширський"],[40,"Ковельський"],[39,"Луцький"]],"9":[[44,"Дніпровський"],[42,"Кам'янський"],[46,"Криворізький"],[47,"Нікопольський"],[45,"Павлоградський"],[43,"Самарівський"],[48,"Синельниківський"]],"10":[[57,"Бердичівський"],[59,"Житомирський"],[60,"Звягельський"],[58,"Коростенський"]],"11":[[61,"Берегівський"],[65,"Мукачівський"],[63,"Рахівський"],[64,"Тячівський"],[66,"Ужгородський"],[62,"Хустський"]],"12":[[147,"Бердянський"],[146,"Василівський"],[149,"Запорізький"],[148,"Мелітопольський"],[145,"Пологівський"]],"13":[[68,"Івано-Франківський"],[67,"Верховинський"],[71,"Калуський"],[70,"Коломийський"],[69,"Косівський"],[72,"Надвірнянський"]],"14":[[78,"Бориспільський"],[79,"Броварський"],[75,"Бучанський"],[73,"Білоцерківський"],[74,"Вишгородський"],[76,"Обухівський"],[77,"Фастівський"]],"15":[[82,"Голованівський"],[81,"Кропивницький"],[83,"Новоукраїнський"],[80,"Олександрійський"]],"16":[[1803,"Алчевський"],[1804,"Довжанський"],[1801,"Луганський"],[1802,"Ровеньківський"],[85,"Сватівський"],[86,"Старобільський"],[84,"Сіверськодонецький"],[87,"Щастинський"]],"17":[[96,"Баштанський"],[95,"Вознесенський"],[98,"Миколаївський"],[97,"Первомайський"]],"18":[[101,"Ізмаїльський"],[100,"Березівський"],[105,"Болградський"],[102,"Білгород-Дністровський"],[104,"Одеський"],[99,"Подільський"],[103,"Роздільнянський"]],"19":[[107,"Кременчуцький"],[106,"Лубенський"],[108,"Миргородський"],[109,"Полтавський"]],"20":[[117,"Конотопський"],[118,"Охтирський"],[116,"Роменський"],[114,"Сумський"],[115,"Шосткинський"]],"21":[[120,"Кременецький"],[119,"Тернопільський"],[121,"Чортківський"]],"22":[[125,"Ізюмський"],[127,"Берестинський"],[126,"Богодухівський"],[123,"Куп'янський"],[128,"Лозівський"],[124,"Харківський"],[122,"Чугуївський"]],"23":[[129,"Бериславський"],[133,"Генічеський"],[131,"Каховський"],[130,"Скадовський"],[132,"Херсонський"]],"24":[[150,"Звенигородський"],[153,"Золотоніський"],[151,"Уманський"],[152,"Черкаський"]],"25":[[144,"Корюківський"],[141,"Новгород-Сіверський"],[142,"Ніжинський"],[143,"Прилуцький"],[140,"Чернігівський"]],"26":[[138,"Вижницький"],[139,"Дністровський"],[137,"Чернівецький"]],"27":[[91,"Дрогобицький"],[94,"Золочівський"],[90,"Львівський"],[88,"Самбірський"],[89,"Стрийський"],[92,"Шептицький"],[93,"Яворівський"]],"28":[[54,"Бахмутський"],[55,"Волноваський"],[51,"Горлівський"],[53,"Донецький"],[49,"Кальміуський"],[50,"Краматорський"],[52,"Маріупольський"],[56,"Покровський"]]};
+const NAME={},PARENT={};
+Object.values(RA).forEach(l=>l.sort((a,b)=>a[1].localeCompare(b[1],"uk")));
+R.forEach(r=>{NAME[r[0]]=r[1]+(r[0]<29?" обл.":"")});
+Object.keys(RA).forEach(o=>RA[o].forEach(x=>{NAME[x[0]]=x[1]+" р-н";PARENT[x[0]]=+o}));
+const ST={N:"спокійно",A:"тривога",R:"червоний рівень",Y:"жовтий рівень",P:"частково"," ":"немає даних"};
+
+const $=s=>document.querySelector(s);
+const api=(u,b)=>fetch(u,b===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>{if(!r.ok)throw new Error(r.status);return r.json()});
+let cfg=null, st=null, map=[], savedMap="[]", selObl=0, wiz=null;
+
+function toast(t){const e=$("#toast");e.textContent=t;e.classList.add("on");clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove("on"),2200)}
+function fmtAge(s){if(s<0)return"—";if(s<60)return s+" с тому";if(s<3600)return Math.floor(s/60)+" хв тому";return Math.floor(s/3600)+" год тому"}
+function fmtUp(s){const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return(d?d+" д ":"")+h+" год "+m+" хв"}
+
+// стан локації так само, як його рахує прошивка: тривога на всю область поширюється на райони
+function stOf(uid){
+  const a=st&&st.alerts||"";let c=a[uid]||" ";const p=PARENT[uid];
+  if(p&&(c==="N"||c===" ")){const pc=a[p];if(pc==="A"||pc==="R"||pc==="Y")c=pc}
+  return c;
+}
+const stCls=c=>c==="A"||c==="R"?"red":c==="Y"?"yellow":c==="P"?"partial":"";
+const ledsOf=uid=>map.reduce((a,v,i)=>(v===uid&&a.push(i),a),[]);
+const ledsIn=o=>map.reduce((a,v,i)=>((v===o||PARENT[v]===o)&&a.push(i),a),[]);
+const dirty=()=>JSON.stringify(map)!==savedMap;
+
+// вкладки
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("nav button").forEach(x=>x.setAttribute("aria-selected",x===b));
+  document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id==="t-"+b.dataset.t));
+  if(b.dataset.t==="wifi")scan();
+});
+
+// картограма
+function buildMap(el,onTap){
+  el.innerHTML="";
+  R.forEach(r=>{
+    const t=document.createElement("div");
+    t.className="tile";t.title=r[1];t.dataset.u=r[0];
+    t.style.gridColumn=(r[3]+1);t.style.gridRow=(r[4]+1)+(r[5]?" / span "+r[5]:"");
+    t.innerHTML=`<span class="ab">${r[2]}</span><span class="n"></span>`;
+    t.onclick=()=>onTap(r[0]);
+    el.appendChild(t);
+  });
+}
+function paintLive(){
+  const stale=!st||st.stale;
+  document.querySelectorAll("#mapLive .tile").forEach(t=>{
+    const u=+t.dataset.u,n=ledsIn(u).length;
+    t.className="tile "+(stale?"stale":stCls(stOf(u)))+(u===selObl?" sel":"")+(n?"":" empty");
+    t.querySelector(".n").textContent=n?"":"без LED";
+  });
+  document.querySelectorAll("[data-st]").forEach(e=>{const c=stOf(+e.dataset.st);e.textContent=ST[c]||"—";e.className="stt "+stCls(c)});
+}
+function paintBind(){
+  document.querySelectorAll("#mapBind .tile").forEach(t=>{
+    const u=+t.dataset.u,n=ledsIn(u).length;
+    t.className="tile"+(n?" has":" empty")+(wiz&&wiz.obl===u?" sel":"");
+    t.querySelector(".n").textContent=n;
+  });
+  const d=dirty();
+  $("#mapDirty").hidden=!d;$("#mapClean").hidden=d;$("#mapSave").disabled=!d;
+  if($("details").open)renderTable();
+}
+function afterEdit(){$("#ledCount").value=map.length;paintBind();paintLive()}
+
+// панель області на вкладці «Карта»
+function showRegion(o){
+  selObl=o;
+  const rows=[[o,RA[o]?"Вся область":"Уся територія"]].concat(RA[o]||[]);
+  const chips=u=>{const l=ledsOf(u);return l.length?l.map(x=>`<span class="chip">№${x}<button aria-label="Відв'язати" data-l="${x}">×</button></span>`).join(""):'<span class="faint">—</span>'};
+  $("#regPanel").innerHTML=`
+    <h2>${NAME[o]}</h2>
+    <div class="rrows">${rows.map(x=>`<div class="rrow"><div><div class="rn">${x[1]}</div><span class="stt" data-st="${x[0]}"></span></div><div class="chips">${chips(x[0])}</div></div>`).join("")}</div>
+    <h3>Додати світлодіод</h3>
+    <div class="row">
+      <select id="addTo" style="flex:1 1 150px">${rows.map(x=>`<option value="${x[0]}">${x[1]}</option>`).join("")}</select>
+      <input type="number" id="addLed" min="0" placeholder="№ LED" style="width:96px;flex:none">
+      <button class="btn" id="addBtn">Додати</button>
+    </div>
+    <div class="row" style="margin-top:var(--s3)">
+      <button class="btn" id="hlBtn">Підсвітити</button>
+      <button class="btn primary" id="saveHere" ${dirty()?"":"disabled"}>Зберегти</button>
+    </div>`;
+  $("#regPanel").querySelectorAll(".chip button").forEach(b=>b.onclick=()=>{map[+b.dataset.l]=0;afterEdit();showRegion(o)});
+  $("#addBtn").onclick=()=>{const l=parseInt($("#addLed").value);if(isNaN(l)||l<0||l>299)return toast("Номер від 0 до 299");
+    const to=+$("#addTo").value;while(map.length<=l)map.push(0);map[l]=to;afterEdit();showRegion(o);$("#addTo").value=to};
+  $("#hlBtn").onclick=()=>api("/api/highlight",{uid:o}).then(()=>toast("Підсвічено на 4 секунди")).catch(()=>toast("Не вдалося"));
+  $("#saveHere").onclick=saveMap;
+  paintLive();
+}
+
+// майстер прив'язки
+function wizShow(){
+  $("#wizIdle").hidden=!!wiz;$("#wizRun").hidden=!wiz;
+  if(!wiz)return paintBind();
+  wiz.obl=0;
+  $("#wizLed").textContent="№"+wiz.led;$("#wizOf").textContent="з "+(wiz.count-1);
+  const u=map[wiz.led];
+  $("#wizHint").textContent=u?`Зараз прив'язаний до: ${NAME[u]||"UID "+u}. Торкніться області, щоб змінити.`:"Торкніться області, де горить цей світлодіод.";
+  $("#wizPick").innerHTML="";
+  paintBind();
+  api("/api/identify",{led:wiz.led,count:wiz.count}).catch(()=>toast("Пристрій не відповідає"));
+}
+function wizAssign(uid){map[wiz.led]=uid;paintLive();wizNext()}
+function wizNext(){if(wiz.led<wiz.count-1){wiz.led++;wizShow()}else{wizEnd();toast("Усі світлодіоди пройдено. Не забудьте зберегти.")}}
+function wizEnd(){wiz=null;wizShow();api("/api/identify",{led:-1}).catch(()=>{})}
+$("#wizGo").onclick=()=>{
+  const n=Math.max(1,Math.min(300,parseInt($("#ledCount").value)||27));
+  while(map.length<n)map.push(0);map.length=n;
+  wiz={led:Math.max(0,Math.min(n-1,parseInt($("#wizStart").value)||0)),count:n,obl:0};
+  wizShow();
+};
+$("#wizBack").onclick=()=>{if(wiz.led>0){wiz.led--;wizShow()}};
+$("#wizSkip").onclick=()=>wizAssign(0);
+$("#wizStop").onclick=wizEnd;
+setInterval(()=>{if(wiz)api("/api/identify",{led:wiz.led,count:wiz.count}).catch(()=>{})},30000);
+
+function bindTap(o){
+  if(!wiz){api("/api/highlight",{uid:o}).catch(()=>{});return toast(NAME[o]+": "+(ledsIn(o).map(l=>"№"+l).join(", ")||"немає світлодіодів"))}
+  if(!RA[o])return wizAssign(o);                 // Київ, Севастополь, Крим — районів немає
+  wiz.obl=o;paintBind();
+  $("#wizHint").textContent=NAME[o]+": уся область чи окремий район?";
+  const p=$("#wizPick");p.innerHTML="";
+  [[o,"Вся область"]].concat(RA[o]).forEach((x,i)=>{
+    const b=document.createElement("button");b.className="btn"+(i?"":" primary");b.textContent=x[1];
+    b.onclick=()=>wizAssign(x[0]);p.appendChild(b)});
+}
+
+function saveMap(){
+  api("/api/map",{map}).then(()=>{savedMap=JSON.stringify(map);paintBind();if(selObl)showRegion(selObl);toast("Прив'язку збережено")}).catch(()=>toast("Помилка збереження"));
+}
+$("#mapSave").onclick=saveMap;
+
+function renderTable(){
+  const opts='<option value="0">— не прив\'язано</option>'+R.slice().sort((a,b)=>a[1].localeCompare(b[1],"uk")).map(r=>
+    `<optgroup label="${r[1]}"><option value="${r[0]}">${NAME[r[0]]}${RA[r[0]]?" (вся)":""}</option>${(RA[r[0]]||[]).map(x=>`<option value="${x[0]}">${x[1]} р-н</option>`).join("")}</optgroup>`).join("");
+  $("#mapTable").innerHTML=map.map((v,i)=>`<tr><td>№${i}</td><td><select data-l="${i}">${opts}</select></td></tr>`).join("");
+  $("#mapTable").querySelectorAll("select").forEach(s=>{s.value=map[+s.dataset.l];s.onchange=()=>{map[+s.dataset.l]=+s.value;paintBind();paintLive()}});
+}
+$("details").addEventListener("toggle",e=>{if(e.target.open)renderTable()});
+$("#ledCount").onchange=()=>{const n=Math.max(1,Math.min(300,parseInt($("#ledCount").value)||1));while(map.length<n)map.push(0);map.length=n;paintBind();paintLive()};
+
+// налаштування
+const F=["api","interval","pin","bright","calmMode","calmLevel","alertAnim","calmAnim","animSpeed","cRed","cYellow","cPartial","cCalm","cError","nightBright","nightFrom","nightTo"];
+const COL=["cRed","cYellow","cPartial","cCalm","cError"];
+function fillCfg(){
+  F.forEach(k=>$("#"+k).value=cfg[k]);
+  $("#nightOn").value=cfg.nightOn?1:0;
+  $("#tokenInfo").textContent=cfg.tokenSet?"збережено: …"+cfg.tokenTail:"токен не задано";
+  $("#changeFx").value=cfg.changeFx?1:0;
+  ["bright","calmLevel","nightBright","animSpeed"].forEach(k=>{const u=()=>$("#"+k+"V").textContent=$("#"+k).value;$("#"+k).oninput=u;u()});
+}
+function formBody(){
+  const b={};F.forEach(k=>{const v=$("#"+k).value;b[k]=COL.includes(k)?v:+v});
+  b.nightOn=$("#nightOn").value==="1";b.changeFx=$("#changeFx").value==="1";
+  return b;
+}
+// перегляд: застосовуємо форму без запису в пам'ять і вмикаємо вибраний стан
+let testOn="";
+function runTest(s){
+  testOn=s;
+  const go=()=>api("/api/test",{state:s});
+  (s?api("/api/config?save=0",formBody()).then(go):go())
+    .then(()=>{$("#testInfo").textContent=s?"Перегляд увімкнено. Змінюйте налаштування вище: карта оновлюється одразу.":""})
+    .catch(()=>toast("Пристрій не відповідає"));
+}
+document.querySelectorAll("#testRow button").forEach(b=>b.onclick=()=>runTest(b.dataset.s));
+["alertAnim","calmAnim","animSpeed","changeFx","calmMode","calmLevel","bright","cRed","cYellow","cPartial","cCalm","cError"].forEach(k=>
+  $("#"+k).addEventListener("change",()=>{if(testOn)runTest(testOn)}));
+$("#setSave").onclick=()=>{
+  const b=formBody();
+  const t=$("#token").value.trim();if(t)b.token=t;
+  api("/api/config",b).then(()=>{$("#token").value="";toast("Збережено");return load()}).catch(e=>toast(e.message==="400"?"Цей GPIO не можна використовувати":"Помилка збереження"));
+};
+
+// Wi-Fi
+function scan(){
+  $("#nets").innerHTML='<span class="muted" style="font-size:var(--fs-sm)">Пошук мереж…</span>';
+  let tries=0;
+  const poll=()=>api("/api/scan").then(d=>{
+    if(d.scanning){if(++tries>25)throw 0;return setTimeout(poll,1200)}
+    const n=d.networks.sort((a,b)=>b.rssi-a.rssi);
+    $("#nets").innerHTML=n.length?"":'<span class="muted">Мереж не знайдено</span>';
+    n.forEach(x=>{const b=document.createElement("button");
+      b.innerHTML=`<span></span><span class="mono muted">${x.rssi} dBm${x.open?" · відкрита":""}</span>`;b.firstChild.textContent=x.ssid;
+      b.onclick=()=>{$("#ssid").value=x.ssid;$("#pass").focus()};$("#nets").appendChild(b)});
+  }).catch(()=>$("#nets").innerHTML='<span class="muted">Не вдалося просканувати</span>');
+  poll();
+}
+$("#scanBtn").onclick=scan;
+$("#wifiSave").onclick=()=>{
+  const ssid=$("#ssid").value.trim();if(!ssid)return toast("Вкажіть назву мережі");
+  api("/api/wifi",{ssid,pass:$("#pass").value}).catch(()=>{});
+  toast("Перезавантаження… Пристрій буде доступний за адресою alertmap.local");
+};
+
+// система
+function upload(url,file,prog){
+  return new Promise((ok,fail)=>{const x=new XMLHttpRequest(),fd=new FormData();fd.append("f",file,file.name);
+    x.upload.onprogress=e=>prog&&(prog.textContent=Math.round(e.loaded/e.total*100)+"%");
+    x.onload=()=>x.status===200?ok():fail();x.onerror=fail;x.open("POST",url);x.send(fd)});
+}
+$("#fwBtn").onclick=()=>{const f=$("#fwFile").files[0];if(!f)return toast("Оберіть файл .bin");
+  upload("/update",f,$("#fwProg")).then(()=>toast("Прошивку оновлено, перезавантаження…")).catch(()=>toast("Помилка оновлення"))};
+$("#fsBtn").onclick=()=>{const f=$("#fsFile").files[0];if(!f)return toast("Оберіть файл");
+  upload("/fs",new File([f],"index.html")).then(()=>{toast("Завантажено, оновлюю сторінку");setTimeout(()=>location.reload(),800)}).catch(()=>toast("Помилка"))};
+$("#otaSave").onclick=()=>api("/api/config",{otaRepo:$("#otaRepo").value.trim(),otaAuto:$("#otaAuto").value==="1"})
+  .then(()=>{toast("Збережено");return load()}).catch(e=>toast(e.message==="400"?"Формат: користувач/репозиторій":"Помилка збереження"));
+$("#otaCheck").onclick=()=>api("/api/ota/check",{}).then(()=>{$("#otaInfo").textContent="Перевіряю…";setTimeout(poll,2500);setTimeout(poll,6000)}).catch(()=>toast("Пристрій не відповідає"));
+$("#otaInstall").onclick=()=>api("/api/ota/install",{}).then(()=>{$("#otaInstall").hidden=true;$("#otaInfo").textContent="Встановлюю… Не вимикайте живлення."}).catch(()=>toast("Пристрій не відповідає"));
+$("#rebootBtn").onclick=()=>{api("/api/reboot",{}).catch(()=>{});toast("Перезавантаження…")};
+
+// стан
+function paintState(){
+  const s=st, dot=$("#dot");
+  let txt,cls;
+  if(!s){txt="немає зв'язку з пристроєм";cls="bad"}
+  else if(!s.wifi){txt=s.ap?"режим налаштування":"немає Wi-Fi";cls="warn"}
+  else if(s.age<0){txt=s.http?"HTTP "+s.http+" · даних немає":"очікування даних";cls="warn"}
+  else if(s.stale){txt="HTTP "+s.http+" · дані застаріли";cls="bad"}
+  else{txt="оновлено "+fmtAge(s.age);cls="ok"}
+  dot.className="dot "+cls;$("#pillTxt").textContent=txt;
+  if(!s)return;
+  const kv=(o)=>Object.entries(o).map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join("");
+  const act=R.filter(r=>"ARY".includes(stOf(r[0]))).length, part=R.filter(r=>stOf(r[0])==="P").length;
+  $("#kvState").innerHTML=kv({"Останнє оновлення":fmtAge(s.age),"Код відповіді":s.http,"Успішних / помилок":s.ok+" / "+s.err,"Тривога в областях":s.alerts?act+" повністю, "+part+" частково":"—"});
+  $("#kvSys").innerHTML=kv({"Прошивка":"v"+s.ver,"Веб-інтерфейс":"v2.4.0 · 26.11.2026 00:10","Мережа":s.wifi?s.ssid:"—","IP":s.wifi?s.ip:"192.168.4.1","Сигнал":s.wifi?s.rssi+" dBm":"—","Працює":fmtUp(s.uptime),"Чип":s.chip,"Вільна пам'ять":Math.round(s.heap/1024)+" КБ","Час NTP":s.timeOk?"синхронізовано":"—","Яскравість зараз":s.bright});
+  const o=s.ota||{},ot={checking:"Перевіряю…",uptodate:"Встановлено останню версію (v"+o.latest+").",available:"Доступна версія v"+o.latest+", зараз встановлено v"+s.ver+".",
+    installing:"Встановлюю"+(o.msg?": "+o.msg:"… Не вимикайте живлення."),error:"Помилка: "+o.msg};
+  $("#otaInfo").textContent=ot[o.st]||"";$("#otaInstall").hidden=o.st!=="available";
+  if(!s.test&&testOn){testOn="";$("#testInfo").textContent=""}
+  $("#wifiNow").textContent=s.wifi?`Підключено до «${s.ssid}», сигнал ${s.rssi} dBm.`:"Пристрій зараз не підключений до мережі.";
+}
+function poll(){api("/api/state").then(d=>{st=d;paintState();paintLive()}).catch(()=>{st=null;paintState()})}
+
+function load(){return api("/api/config").then(c=>{cfg=c;map=c.map.slice();savedMap=JSON.stringify(map);
+  $("#ledCount").value=map.length;fillCfg();$("#otaRepo").value=c.otaRepo||"";$("#otaAuto").value=c.otaAuto?1:0;paintBind();paintLive();if(c.ssid)$("#ssid").value=c.ssid})}
+
+buildMap($("#mapLive"),showRegion);
+buildMap($("#mapBind"),bindTap);
+load().catch(()=>toast("Не вдалося завантажити налаштування"));
+poll();setInterval(poll,3000);
+</script>
+</body>
+</html>

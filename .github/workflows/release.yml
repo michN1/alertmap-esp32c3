@@ -1,0 +1,43 @@
+# Збирає прошивку і публікує реліз, коли в репозиторій надходить тег виду v2.3.1.
+# Карта бере з останнього релізу файли: version.json, firmware-esp32c3.bin, index.html.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Встановити PlatformIO
+        run: pip install platformio
+
+      - name: Записати версію з тега
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          sed -i "s/^#define FW_VERSION .*/#define FW_VERSION        \"$VER\"/" include/config.h
+          grep FW_VERSION include/config.h
+          echo "{\"version\":\"$VER\"}" > version.json
+
+      - name: Зібрати прошивку
+        run: |
+          pio run -e esp32c3
+          cp .pio/build/esp32c3/firmware.bin firmware-esp32c3.bin
+
+      - name: Опублікувати реліз
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            firmware-esp32c3.bin
+            data/index.html
+            version.json
