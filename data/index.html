@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- ВЕРСІЯ 2.5.3 · оновлено 26.11.2026 01:22 -->
+<!-- ВЕРСІЯ 2.6.2 · оновлено 26.11.2026 02:00 -->
 <html lang="uk">
 <head>
 <meta charset="utf-8">
@@ -99,6 +99,9 @@ input[type=color]{width:100%;height:40px;padding:2px;background:var(--bg);border
 .muted{color:var(--muted)} .mono{font-family:var(--font-mono)}
 .big{font:600 var(--fs-xl)/1 var(--font-display)}
 .dirty{color:var(--accent);font-size:var(--fs-sm)}
+.bar{height:6px;background:var(--surface-2);border-radius:3px;overflow:hidden;margin:var(--s3) 0 var(--s2)}
+.bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s ease}
+.pinfo{font-size:var(--fs-sm);color:var(--muted);margin:0 0 var(--s4);min-height:1.2em}
 .toast{position:fixed;left:50%;bottom:var(--s5);transform:translateX(-50%);background:var(--text);color:var(--bg);padding:var(--s2) var(--s4);border-radius:var(--r1);font-size:var(--fs-sm);opacity:0;transition:opacity .2s;pointer-events:none;max-width:calc(100% - 32px)}
 .toast.on{opacity:1}
 .list{max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:var(--r1)}
@@ -216,6 +219,7 @@ details summary{cursor:pointer;color:var(--muted);font-size:var(--fs-sm);margin-
   <div class="panel">
     <h2>Світлодіоди</h2>
     <div class="grid2">
+      <label class="f">Карта<select id="ledOn"><option value="1">увімкнена</option><option value="0">вимкнена</option></select></label>
       <label class="f">GPIO стрічки<input type="number" id="pin" min="0" max="10"></label>
       <label class="f">Яскравість <span class="mono" id="brightV"></span><input type="range" id="bright" min="1" max="255"></label>
       <label class="f">Спокійний стан
@@ -258,6 +262,18 @@ details summary{cursor:pointer;color:var(--muted);font-size:var(--fs-sm);margin-
     <p class="note" id="testInfo" style="margin:var(--s3) 0 0"></p>
   </div>
   <div class="panel">
+    <h2>Home Assistant (MQTT)</h2>
+    <p class="note">Вкажіть адресу брокера MQTT, і карта сама з'явиться в Home Assistant як пристрій: світло з яскравістю, вибір анімацій, нічний режим, датчик тривоги, діагностика. Порожня адреса вимикає інтеграцію.</p>
+    <div class="grid2">
+      <label class="f">Адреса брокера<input type="text" id="mqttHost" placeholder="192.168.0.10 або homeassistant.local" autocomplete="off" autocapitalize="off"></label>
+      <label class="f">Порт<input type="number" id="mqttPort" min="1" max="65535"></label>
+      <label class="f">Логін<input type="text" id="mqttUser" autocomplete="off" autocapitalize="off"></label>
+      <label class="f">Пароль<input type="password" id="mqttPass" placeholder="не змінювати" autocomplete="new-password"><span id="mqttPassInfo" class="mono"></span></label>
+      <label class="f">Моя локація (для датчика «Тривога»)<select id="homeUid"></select></label>
+    </div>
+    <p class="note" id="mqttInfo" style="margin:var(--s3) 0 0"></p>
+  </div>
+  <div class="panel">
     <h2>Нічний режим</h2>
     <div class="grid2">
       <label class="f">Увімкнено<select id="nightOn"><option value="0">ні</option><option value="1">так</option></select></label>
@@ -295,9 +311,11 @@ details summary{cursor:pointer;color:var(--muted);font-size:var(--fs-sm);margin-
       <h2>Оновлення з файлу</h2>
       <p class="note">Прошивка: файл firmware.bin з папки .pio/build. Веб-інтерфейс: цей index.html.</p>
       <label class="f">Прошивка (.bin)<input type="file" id="fwFile" accept=".bin"></label>
-      <div class="row" style="margin:var(--s3) 0 var(--s4)"><button class="btn" id="fwBtn">Оновити прошивку</button><span class="muted mono" id="fwProg"></span></div>
+      <div class="row" style="margin-top:var(--s3)"><button class="btn" id="fwBtn">Оновити прошивку</button></div>
+      <div class="bar" id="fwBar" hidden><i></i></div><p class="pinfo" id="fwInfo"></p>
       <label class="f">Файл веб-інтерфейсу<input type="file" id="fsFile" accept=".html"></label>
       <div class="row" style="margin-top:var(--s3)"><button class="btn" id="fsBtn">Завантажити</button></div>
+      <div class="bar" id="fsBar" hidden><i></i></div><p class="pinfo" id="fsInfo"></p>
       <h3>Пристрій</h3>
       <button class="btn ghost" id="rebootBtn">Перезавантажити</button>
     </div>
@@ -314,6 +332,7 @@ details summary{cursor:pointer;color:var(--muted);font-size:var(--fs-sm);margin-
       <button class="btn" id="otaCheck">Перевірити оновлення</button>
       <button class="btn primary" id="otaInstall" hidden>Встановити</button>
     </div>
+    <div class="bar" id="otaBar" hidden><i></i></div>
     <p class="note" id="otaInfo" style="margin:var(--s3) 0 0"></p>
   </div>
 </section>
@@ -465,9 +484,12 @@ function saveMap(){
 }
 $("#mapSave").onclick=saveMap;
 
-function renderTable(){
-  const opts='<option value="0">— не прив\'язано</option>'+R.slice().sort((a,b)=>a[1].localeCompare(b[1],"uk")).map(r=>
+// список усіх локацій, згрупований за областями
+const LOCG=R.slice().sort((a,b)=>a[1].localeCompare(b[1],"uk")).map(r=>
     `<optgroup label="${r[1]}"><option value="${r[0]}">${NAME[r[0]]}${RA[r[0]]?" (вся)":""}</option>${(RA[r[0]]||[]).map(x=>`<option value="${x[0]}">${x[1]} р-н</option>`).join("")}</optgroup>`).join("");
+$("#homeUid").innerHTML='<option value="0">— не вибрано</option>'+LOCG;
+function renderTable(){
+  const opts='<option value="0">— не прив\'язано</option>'+LOCG;
   $("#mapTable").innerHTML=map.map((v,i)=>`<tr><td>№${i}</td><td><select data-l="${i}">${opts}</select></td></tr>`).join("");
   $("#mapTable").querySelectorAll("select").forEach(s=>{s.value=map[+s.dataset.l];s.onchange=()=>{map[+s.dataset.l]=+s.value;paintBind();paintLive()}});
 }
@@ -475,18 +497,22 @@ $("details").addEventListener("toggle",e=>{if(e.target.open)renderTable()});
 $("#ledCount").onchange=()=>{const n=Math.max(1,Math.min(300,parseInt($("#ledCount").value)||1));while(map.length<n)map.push(0);map.length=n;paintBind();paintLive()};
 
 // налаштування
-const F=["api","interval","pin","bright","calmMode","calmLevel","alertAnim","calmAnim","animSpeed","cRed","cYellow","cPartial","cCalm","cError","cFlagBlue","cFlagYellow","nightBright","nightFrom","nightTo"];
+const F=["api","interval","pin","bright","calmMode","calmLevel","alertAnim","calmAnim","animSpeed","cRed","cYellow","cPartial","cCalm","cError","cFlagBlue","cFlagYellow","nightBright","nightFrom","nightTo","mqttPort","homeUid"];
 const COL=["cRed","cYellow","cPartial","cCalm","cError","cFlagBlue","cFlagYellow"];
 function fillCfg(){
   F.forEach(k=>$("#"+k).value=cfg[k]);
   $("#nightOn").value=cfg.nightOn?1:0;
   $("#tokenInfo").textContent=cfg.tokenSet?"збережено: …"+cfg.tokenTail:"токен не задано";
-  $("#changeFx").value=cfg.changeFx?1:0;
+  $("#changeFx").value=cfg.changeFx?1:0;$("#ledOn").value=cfg.ledOn?1:0;
+  $("#mqttHost").value=cfg.mqttHost||"";$("#mqttUser").value=cfg.mqttUser||"";
+  $("#mqttPassInfo").textContent=cfg.mqttPassSet?"пароль збережено":"";
   ["bright","calmLevel","nightBright","animSpeed"].forEach(k=>{const u=()=>$("#"+k+"V").textContent=$("#"+k).value;$("#"+k).oninput=u;u()});
 }
 function formBody(){
   const b={};F.forEach(k=>{const v=$("#"+k).value;b[k]=COL.includes(k)?v:+v});
-  b.nightOn=$("#nightOn").value==="1";b.changeFx=$("#changeFx").value==="1";
+  b.nightOn=$("#nightOn").value==="1";b.changeFx=$("#changeFx").value==="1";b.ledOn=$("#ledOn").value==="1";
+  b.mqttHost=$("#mqttHost").value.trim();b.mqttUser=$("#mqttUser").value.trim();
+  const mp=$("#mqttPass").value;if(mp)b.mqttPass=mp;
   return b;
 }
 // перегляд: застосовуємо форму без запису в пам'ять і вмикаємо вибраний стан
@@ -504,7 +530,7 @@ document.querySelectorAll("#testRow button").forEach(b=>b.onclick=()=>runTest(b.
 $("#setSave").onclick=()=>{
   const b=formBody();
   const t=$("#token").value.trim();if(t)b.token=t;
-  api("/api/config",b).then(()=>{$("#token").value="";toast("Збережено");return load()}).catch(e=>toast(e.message==="400"?"Цей GPIO не можна використовувати":"Помилка збереження"));
+  api("/api/config",b).then(()=>{$("#token").value="";$("#mqttPass").value="";toast("Збережено");return load()}).catch(e=>toast(e.message==="400"?"Цей GPIO не можна використовувати":"Помилка збереження"));
 };
 
 // Wi-Fi
@@ -529,20 +555,37 @@ $("#wifiSave").onclick=()=>{
 };
 
 // система
-function upload(url,file,prog){
+// смуга прогресу: p від 0 до 100, null ховає її
+function bar(id,p){const b=$("#"+id);b.hidden=p==null;if(p!=null)b.firstElementChild.style.width=Math.max(0,Math.min(100,p))+"%"}
+function upload(url,file,barId,info){
   return new Promise((ok,fail)=>{const x=new XMLHttpRequest(),fd=new FormData();fd.append("f",file,file.name);
-    x.upload.onprogress=e=>prog&&(prog.textContent=Math.round(e.loaded/e.total*100)+"%");
+    bar(barId,0);info.textContent="Завантаження: 0%";
+    x.upload.onprogress=e=>{const p=Math.round(e.loaded/e.total*100);bar(barId,p);info.textContent="Завантаження: "+p+"%"};
     x.onload=()=>x.status===200?ok():fail();x.onerror=fail;x.open("POST",url);x.send(fd)});
 }
-$("#fwBtn").onclick=()=>{const f=$("#fwFile").files[0];if(!f)return toast("Оберіть файл .bin");
-  upload("/update",f,$("#fwProg")).then(()=>toast("Прошивку оновлено, перезавантаження…")).catch(()=>toast("Помилка оновлення"))};
-$("#fsBtn").onclick=()=>{const f=$("#fsFile").files[0];if(!f)return toast("Оберіть файл");
-  upload("/fs",new File([f],"index.html")).then(()=>{toast("Завантажено, оновлюю сторінку");setTimeout(()=>location.reload(),800)}).catch(()=>toast("Помилка"))};
+// після запису прошивки чекаємо, доки пристрій перезавантажиться і знову відповість
+function waitReboot(barId,info){
+  let n=0,gone=false;
+  const t=setInterval(()=>{
+    if(++n>45){clearInterval(t);bar(barId,null);info.textContent="Пристрій не відповідає. Перевірте живлення і Wi-Fi, потім оновіть сторінку.";return}
+    api("/api/state").then(d=>{if(gone||d.uptime<30){clearInterval(t);bar(barId,null);info.textContent="Готово. Встановлено прошивку v"+d.ver+".";setTimeout(()=>location.reload(),2000)}})
+      .catch(()=>{gone=true});
+  },2000);
+}
+$("#fwBtn").onclick=()=>{const f=$("#fwFile").files[0],i=$("#fwInfo");if(!f)return toast("Оберіть файл .bin");
+  $("#fwBtn").disabled=true;
+  upload("/update",f,"fwBar",i).then(()=>{bar("fwBar",100);i.textContent="Записано. Перезавантаження…";waitReboot("fwBar",i)})
+    .catch(()=>{bar("fwBar",null);i.textContent="Помилка оновлення. Перевірте, що вибрано файл прошивки для цього чипа.";$("#fwBtn").disabled=false})};
+$("#fsBtn").onclick=()=>{const f=$("#fsFile").files[0],i=$("#fsInfo");if(!f)return toast("Оберіть файл");
+  upload("/fs",new File([f],"index.html"),"fsBar",i).then(()=>{bar("fsBar",100);i.textContent="Завантажено. Оновлюю сторінку…";setTimeout(()=>location.reload(),1000)})
+    .catch(()=>{bar("fsBar",null);i.textContent="Помилка завантаження."})};
+let otaRun=false;
 $("#otaSave").onclick=()=>api("/api/config",{otaRepo:$("#otaRepo").value.trim(),otaAuto:$("#otaAuto").value==="1"})
   .then(()=>{toast("Збережено");return load()}).catch(e=>toast(e.message==="400"?"Формат: користувач/репозиторій":"Помилка збереження"));
 $("#otaCheck").onclick=()=>api("/api/config",{otaRepo:$("#otaRepo").value.trim(),otaAuto:$("#otaAuto").value==="1"})
   .then(()=>api("/api/ota/check",{})).then(()=>{$("#otaInfo").textContent="Перевіряю…";setTimeout(poll,2500);setTimeout(poll,6000)}).catch(e=>toast(e.message==="400"?"Формат: користувач/репозиторій":"Пристрій не відповідає"));
-$("#otaInstall").onclick=()=>api("/api/ota/install",{}).then(()=>{$("#otaInstall").hidden=true;$("#otaInfo").textContent="Встановлюю… Не вимикайте живлення."}).catch(()=>toast("Пристрій не відповідає"));
+$("#otaInstall").onclick=()=>api("/api/ota/install",{}).then(()=>{otaRun=true;$("#otaInstall").hidden=true;bar("otaBar",0);$("#otaInfo").textContent="Починаю оновлення… Не вимикайте живлення."}).catch(()=>toast("Пристрій не відповідає"));
+setInterval(()=>{if(otaRun)poll()},1000);        // під час оновлення опитуємо частіше
 $("#rebootBtn").onclick=()=>{api("/api/reboot",{}).catch(()=>{});toast("Перезавантаження…")};
 
 // стан
@@ -559,10 +602,18 @@ function paintState(){
   const kv=(o)=>Object.entries(o).map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join("");
   const act=R.filter(r=>"ARY".includes(stOf(r[0]))).length, part=R.filter(r=>stOf(r[0])==="P").length;
   $("#kvState").innerHTML=kv({"Останнє оновлення":fmtAge(s.age),"Код відповіді":s.http,"Успішних / помилок":s.ok+" / "+s.err,"Тривога в областях":s.alerts?act+" повністю, "+part+" частково":"—"});
-  $("#kvSys").innerHTML=kv({"Прошивка":"v"+s.ver,"Веб-інтерфейс":"v2.5.3 · 26.11.2026 01:22","Мережа":s.wifi?s.ssid:"—","IP":s.wifi?s.ip:"192.168.4.1","Сигнал":s.wifi?s.rssi+" dBm":"—","Працює":fmtUp(s.uptime),"Чип":s.chip,"Вільна пам'ять":Math.round(s.heap/1024)+" КБ","Час NTP":s.timeOk?"синхронізовано":"—","Яскравість зараз":s.bright,"Світлодіоди":s.led?s.led.count+" шт. на GPIO "+s.led.pin:"—","Кадрів показано":s.led?s.led.frames+(s.led.busy?" (зупинено)":""):"—","Запас стека / причина запуску":s.led?s.led.stack+" / "+s.reset:"—","Збірка":s.build||"—"});
+  $("#kvSys").innerHTML=kv({"Прошивка":"v"+s.ver,"Веб-інтерфейс":"v2.6.2 · 26.11.2026 02:00","Мережа":s.wifi?s.ssid:"—","IP":s.wifi?s.ip:"192.168.4.1","Сигнал":s.wifi?s.rssi+" dBm":"—","Працює":fmtUp(s.uptime),"Чип":s.chip,"Вільна пам'ять":Math.round(s.heap/1024)+" КБ","Час NTP":s.timeOk?"синхронізовано":"—","Яскравість зараз":s.bright,"Світлодіоди":s.led?s.led.count+" шт. на GPIO "+s.led.pin:"—","Кадрів показано":s.led?s.led.frames+(s.led.busy?" (зупинено)":""):"—","Запас стека / причина запуску":s.led?s.led.stack+" / "+s.reset:"—","Збірка":s.build||"—"});
   const o=s.ota||{},ot={checking:"Перевіряю…",uptodate:"Встановлено останню версію (v"+o.latest+").",available:"Доступна версія v"+o.latest+", зараз встановлено v"+s.ver+".",
-    installing:"Встановлюю"+(o.msg?": "+o.msg:"… Не вимикайте живлення."),error:"Помилка: "+o.msg};
-  $("#otaInfo").textContent=ot[o.st]||"";$("#otaInstall").hidden=o.st!=="available";
+    installing:o.msg?"Встановлено: "+o.msg+"…":o.stage===1?"Завантажую веб-сторінку… Не вимикайте живлення.":"Записую прошивку: "+(o.pct||0)+"%. Не вимикайте живлення.",error:"Помилка: "+o.msg};
+  if(o.st==="installing"){otaRun=true;bar("otaBar",o.stage===2?Math.max(3,o.pct):3);$("#otaInfo").textContent=ot.installing;$("#otaInstall").hidden=true}
+  else{
+    bar("otaBar",null);
+    if(otaRun&&o.st==="error")otaRun=false;
+    if(otaRun&&o.st!=="error"&&s.uptime<60){otaRun=false;$("#otaInfo").textContent="Готово. Встановлено прошивку v"+s.ver+".";setTimeout(()=>location.reload(),2000)}
+    else if(!otaRun){$("#otaInfo").textContent=ot[o.st]||"";$("#otaInstall").hidden=o.st!=="available"}
+  }
+  const mq=s.mqtt||{};
+  $("#mqttInfo").textContent=!mq.on?"":mq.ok?"Підключено до брокера. Пристрій шукайте в Home Assistant: Налаштування → Пристрої та служби → MQTT.":"Немає з'єднання з брокером (код "+mq.rc+"). Код 4 або 5 означає неправильний логін чи пароль, від'ємний код — брокер недоступний за цією адресою.";
   if(!s.test&&testOn){testOn="";$("#testInfo").textContent=""}
   $("#wifiNow").textContent=s.wifi?`Підключено до «${s.ssid}», сигнал ${s.rssi} dBm.`:"Пристрій зараз не підключений до мережі.";
 }

@@ -1,5 +1,5 @@
-// ВЕРСІЯ 2.5.3 · оновлено 26.11.2026 01:22
-// (анімації тривоги та спокою, перегляд на карті, оновлення з GitHub, райони)
+// ВЕРСІЯ 2.6.2 · оновлено 26.11.2026 02:00
+// (області й райони, анімації, оновлення з GitHub, Home Assistant через MQTT)
 //
 // Карта тривог v2 — один код для ESP32-S3 (два ядра) та ESP32-C3 (одне ядро)
 //
@@ -26,6 +26,7 @@
 #include <HTTPUpdate.h>
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
+#include <PubSubClient.h>
 #include <time.h>
 #include "config.h"
 #include "locations.h"
@@ -59,6 +60,10 @@ struct Settings {
   uint8_t  calmAnim    = 0;      // анімація спокійного стану, див. calmFactor()
   uint8_t  animSpeed   = 3;      // 1..5, 3 — звичайна швидкість
   bool     changeFx    = true;   // спалах, коли тривога починається або закінчується
+  bool     ledOn       = true;   // карту ввімкнено (вимикається з веб-інтерфейсу або Home Assistant)
+  String   mqttHost, mqttUser, mqttPass;   // брокер MQTT для Home Assistant; порожня адреса — вимкнено
+  uint16_t mqttPort    = 1883;
+  uint16_t homeUid     = 0;      // «своя» локація для датчика тривоги в Home Assistant
   uint32_t cCalm       = 0x00FF60;
   uint32_t cRed        = 0xFF0000;
   uint32_t cYellow     = 0xFF6000;
@@ -147,6 +152,12 @@ void loadSettings() {
   cfg.calmAnim    = prefs.getUChar("cAnim", 0);
   cfg.animSpeed   = constrain(prefs.getUChar("aSpd", 3), 1, 5);
   cfg.changeFx    = prefs.getBool("chFx", true);
+  cfg.ledOn       = prefs.getBool("on", true);
+  cfg.mqttHost    = prefs.getString("mHost", "");
+  cfg.mqttUser    = prefs.getString("mUser", "");
+  cfg.mqttPass    = prefs.getString("mPass", "");
+  cfg.mqttPort    = prefs.getUShort("mPort", 1883);
+  cfg.homeUid     = prefs.getUShort("home", 0);
   cfg.cCalm       = prefs.getUInt("cCalm", cfg.cCalm);
   cfg.cRed        = prefs.getUInt("cRed", cfg.cRed);
   cfg.cYellow     = prefs.getUInt("cYel", cfg.cYellow);
@@ -184,6 +195,12 @@ void saveSettings() {
   prefs.putUChar("cAnim", cfg.calmAnim);
   prefs.putUChar("aSpd", cfg.animSpeed);
   prefs.putBool("chFx", cfg.changeFx);
+  prefs.putBool("on", cfg.ledOn);
+  prefs.putString("mHost", cfg.mqttHost);
+  prefs.putString("mUser", cfg.mqttUser);
+  prefs.putString("mPass", cfg.mqttPass);
+  prefs.putUShort("mPort", cfg.mqttPort);
+  prefs.putUShort("home", cfg.homeUid);
   prefs.putUInt("cCalm", cfg.cCalm);
   prefs.putUInt("cRed", cfg.cRed);
   prefs.putUInt("cYel", cfg.cYellow);
@@ -245,6 +262,8 @@ struct OtaState {
 OtaState ota;                                    // захищено mux
 volatile bool otaCheckReq = false;
 volatile bool otaInstallReq = false;
+volatile uint8_t otaStage = 0;                   // 0 — нічого, 1 — веб-сторінка, 2 — прошивка
+volatile uint8_t otaPct = 0;                     // відсоток запису прошивки
 
 static void setOta(OtaSt st, const char *msg = "") {
   xSemaphoreTake(mux, portMAX_DELAY);
@@ -318,6 +337,8 @@ static void otaInstall(const String &repo) {
   vTaskDelay(pdMS_TO_TICKS(100));
 
   // 1) веб-інтерфейс у тимчасовий файл; підміняємо лише після успішної прошивки
+  otaStage = 1;
+  otaPct = 0;
   bool pageOk = false;
   {
     WiFiClientSecure c;
@@ -345,6 +366,8 @@ static void otaInstall(const String &repo) {
   c.setInsecure();
   httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
   httpUpdate.rebootOnUpdate(false);
+  httpUpdate.onProgress([](int cur, int total) { otaPct = total > 0 ? (uint8_t)((int64_t)cur * 100 / total) : 0; });
+  otaStage = 2;
   t_httpUpdate_return r = httpUpdate.update(c, releaseUrl(repo, OTA_FW_FILE));
   if (r == HTTP_UPDATE_OK) {
     if (pageOk) {
@@ -357,9 +380,258 @@ static void otaInstall(const String &repo) {
     ESP.restart();
   }
   LittleFS.remove("/index.new");
+  otaStage = 0;
   setOta(OtaSt::Error, httpUpdate.getLastErrorString().c_str());
   Serial.printf("[ota] помилка: %s\n", httpUpdate.getLastErrorString().c_str());
   otaBusy = false;
+}
+
+// ======================= Home Assistant через MQTT =======================
+// Карта сама оголошує себе в Home Assistant (MQTT discovery): світло з яскравістю,
+// вибір анімацій, нічний режим, датчик тривоги для «своєї» локації, діагностика, кнопки.
+
+extern char devName[24];
+
+static const char *const ALERT_ANIM_NAMES[ALERT_ANIM_COUNT] = {
+  "пульсація", "рівне світіння", "блимання", "серцебиття", "хвиля за номерами", "полум'я",
+  "повільне дихання", "стробоскоп", "хвиля із заходу на схід", "хвиля з півночі на південь",
+  "кола від центру", "радар"};
+static const char *const CALM_ANIM_NAMES[CALM_ANIM_COUNT] = {
+  "рівне світіння", "дихання", "хвиля за номерами", "зорі", "протифаза до тривоги",
+  "легке мерехтіння", "хвиля із заходу на схід", "кола від центру", "радар"};
+
+WiFiClient mqttNet;
+PubSubClient mqtt(mqttNet);
+char   mqttId[24];                               // alertmap_a1b2c3
+String mqttBase;                                 // alertmap/alertmap_a1b2c3
+char   mqttHostBuf[64];                          // PubSubClient зберігає лише вказівник на адресу
+volatile bool mqttReconf = false;                // змінилися параметри підключення
+volatile bool mqttDirty  = true;                 // стан треба опублікувати заново
+volatile bool mqttOk     = false;
+volatile int  mqttRc     = 0;                    // код стану PubSubClient для веб-інтерфейсу
+volatile uint32_t cfgDirtyAt = 0;                // зміни з MQTT чекають відкладеного запису в NVS
+
+static void mqttPub(const String &topic, const String &payload, bool retain = true) {
+  mqtt.publish(topic.c_str(), payload.c_str(), retain);
+}
+
+// Додає опис пристрою і публікує конфігурацію однієї сутності
+static void mqttDiscover(const char *component, const char *object, JsonDocument &d) {
+  d["uniq_id"] = String(mqttId) + "_" + object;
+  d["avty_t"]  = mqttBase + "/status";
+  JsonObject dev = d["dev"].to<JsonObject>();
+  dev["ids"].to<JsonArray>().add(mqttId);
+  dev["name"] = devName;
+  dev["mf"]   = "alertmap";
+  dev["mdl"]  = String("Карта тривог, ") + ESP.getChipModel();
+  dev["sw"]   = FW_VERSION;
+  dev["cu"]   = "http://" + WiFi.localIP().toString() + "/";
+  String out;
+  serializeJson(d, out);
+  mqttPub(String("homeassistant/") + component + "/" + mqttId + "/" + object + "/config", out);
+}
+
+static void mqttDiscovery() {
+  { JsonDocument d;
+    d["name"] = "Карта"; d["schema"] = "json"; d["brightness"] = true; d["icon"] = "mdi:map";
+    d["cmd_t"] = mqttBase + "/light/set"; d["stat_t"] = mqttBase + "/light/state";
+    mqttDiscover("light", "map", d); }
+  { JsonDocument d;
+    d["name"] = "Анімація тривоги"; d["entity_category"] = "config"; d["icon"] = "mdi:animation";
+    d["cmd_t"] = mqttBase + "/alert_anim/set"; d["stat_t"] = mqttBase + "/alert_anim/state";
+    JsonArray o = d["options"].to<JsonArray>();
+    for (int i = 0; i < ALERT_ANIM_COUNT; i++) o.add(ALERT_ANIM_NAMES[i]);
+    mqttDiscover("select", "alert_anim", d); }
+  { JsonDocument d;
+    d["name"] = "Анімація спокою"; d["entity_category"] = "config"; d["icon"] = "mdi:animation-outline";
+    d["cmd_t"] = mqttBase + "/calm_anim/set"; d["stat_t"] = mqttBase + "/calm_anim/state";
+    JsonArray o = d["options"].to<JsonArray>();
+    for (int i = 0; i < CALM_ANIM_COUNT; i++) o.add(CALM_ANIM_NAMES[i]);
+    mqttDiscover("select", "calm_anim", d); }
+  { JsonDocument d;
+    d["name"] = "Нічний режим"; d["entity_category"] = "config"; d["icon"] = "mdi:weather-night";
+    d["cmd_t"] = mqttBase + "/night/set"; d["stat_t"] = mqttBase + "/night/state";
+    mqttDiscover("switch", "night", d); }
+  { JsonDocument d;
+    d["name"] = "Тривога"; d["device_class"] = "safety";
+    d["stat_t"] = mqttBase + "/home/alert";
+    mqttDiscover("binary_sensor", "home_alert", d); }
+  { JsonDocument d;
+    d["name"] = "Стан локації"; d["icon"] = "mdi:alert-circle-outline";
+    d["stat_t"] = mqttBase + "/home/state";
+    mqttDiscover("sensor", "home_state", d); }
+  { JsonDocument d;
+    d["name"] = "Областей з тривогою"; d["icon"] = "mdi:map-marker-alert"; d["state_class"] = "measurement";
+    d["stat_t"] = mqttBase + "/summary/active";
+    mqttDiscover("sensor", "active", d); }
+  { JsonDocument d;
+    d["name"] = "Дані alerts.in.ua"; d["device_class"] = "connectivity"; d["entity_category"] = "diagnostic";
+    d["stat_t"] = mqttBase + "/api";
+    mqttDiscover("binary_sensor", "api", d); }
+  { JsonDocument d;
+    d["name"] = "Сигнал Wi-Fi"; d["device_class"] = "signal_strength"; d["unit_of_measurement"] = "dBm";
+    d["state_class"] = "measurement"; d["entity_category"] = "diagnostic";
+    d["stat_t"] = mqttBase + "/rssi";
+    mqttDiscover("sensor", "rssi", d); }
+  { JsonDocument d;
+    d["name"] = "Перезавантажити"; d["device_class"] = "restart"; d["entity_category"] = "config";
+    d["cmd_t"] = mqttBase + "/cmd/restart";
+    mqttDiscover("button", "restart", d); }
+  { JsonDocument d;
+    d["name"] = "Перевірити оновлення"; d["entity_category"] = "config"; d["icon"] = "mdi:update";
+    d["cmd_t"] = mqttBase + "/cmd/update";
+    mqttDiscover("button", "update", d); }
+}
+
+// Публікує значення, лише якщо воно змінилося
+static void mqttPubIf(uint8_t slot, const char *sub, const String &v, bool force) {
+  static String cache[9];
+  if (!force && cache[slot] == v) return;
+  cache[slot] = v;
+  mqttPub(mqttBase + "/" + sub, v);
+}
+
+static void mqttPublishState(bool force) {
+  static uint32_t lastRssi = 0;
+
+  // зведення по тривогах: «своя» локація і кількість областей з тривогою
+  char home = ' ';
+  int active = 0;
+  bool stale;
+  xSemaphoreTake(mux, portMAX_DELAY);
+  stale = isStale(net.hasData, net.lastOkMs, cfg.intervalS);
+  const uint16_t hu = cfg.homeUid;
+  if (net.hasData) {
+    for (int i = 0; i < 27; i++) {
+      const char c = net.alerts[DEFAULT_OBLAST_UIDS[i]];
+      if (c == 'A' || c == 'R' || c == 'Y') active++;
+    }
+    if (hu && hu < net.len) {
+      home = net.alerts[hu];
+      const uint8_t p = parentOf(hu);            // тривога на всю область поширюється на район
+      if (p && (home == 'N' || home == ' ')) {
+        const char pc = net.alerts[p];
+        if (pc == 'A' || pc == 'R' || pc == 'Y') home = pc;
+      }
+    }
+  }
+  xSemaphoreGive(mux);
+  if (stale) home = ' ';
+
+  const char *homeText = home == 'N' ? "спокійно" : (home == 'A' || home == 'R') ? "тривога"
+                       : home == 'Y' ? "жовтий рівень" : home == 'P' ? "частково"
+                       : hu ? "немає даних" : "не вибрано";
+  const bool homeAlert = home == 'A' || home == 'R' || home == 'Y';
+
+  mqttPubIf(0, "light/state", String("{\"state\":\"") + (cfg.ledOn ? "ON" : "OFF") + "\",\"brightness\":" + cfg.bright + "}", force);
+  mqttPubIf(1, "alert_anim/state", ALERT_ANIM_NAMES[cfg.alertAnim < ALERT_ANIM_COUNT ? cfg.alertAnim : 0], force);
+  mqttPubIf(2, "calm_anim/state", CALM_ANIM_NAMES[cfg.calmAnim < CALM_ANIM_COUNT ? cfg.calmAnim : 0], force);
+  mqttPubIf(3, "night/state", cfg.nightOn ? "ON" : "OFF", force);
+  mqttPubIf(4, "home/alert", homeAlert ? "ON" : "OFF", force);
+  mqttPubIf(5, "home/state", homeText, force);
+  mqttPubIf(6, "summary/active", String(active), force);
+  mqttPubIf(7, "api", stale ? "OFF" : "ON", force);
+  if (force || millis() - lastRssi > 60000) {
+    lastRssi = millis();
+    mqttPubIf(8, "rssi", String(WiFi.RSSI()), true);
+  }
+}
+
+// Команди з Home Assistant. Виконується в netTask, усередині mqtt.loop()
+static void mqttCallback(char *topic, uint8_t *payload, unsigned int len) {
+  String t(topic), p;
+  p.reserve(len);
+  for (unsigned int i = 0; i < len; i++) p += (char)payload[i];
+  if (!t.startsWith(mqttBase + "/")) return;
+  t = t.substring(mqttBase.length() + 1);
+
+  bool changed = false;
+  if (t == "light/set") {
+    JsonDocument d;
+    if (!deserializeJson(d, p)) {
+      if (d["state"].is<const char *>()) cfg.ledOn = strcmp(d["state"].as<const char *>(), "ON") == 0;
+      if (d["brightness"].is<int>())     cfg.bright = constrain(d["brightness"].as<int>(), 1, 255);
+      changed = true;
+    }
+  } else if (t == "alert_anim/set") {
+    for (int i = 0; i < ALERT_ANIM_COUNT; i++) if (p == ALERT_ANIM_NAMES[i]) { cfg.alertAnim = i; changed = true; }
+  } else if (t == "calm_anim/set") {
+    for (int i = 0; i < CALM_ANIM_COUNT; i++) if (p == CALM_ANIM_NAMES[i]) { cfg.calmAnim = i; changed = true; }
+  } else if (t == "night/set") {
+    cfg.nightOn = (p == "ON");
+    changed = true;
+  } else if (t == "cmd/update") {
+    otaCheckReq = true;
+  } else if (t == "cmd/restart") {
+    mqttPub(mqttBase + "/status", "offline");
+    mqtt.disconnect();
+    delay(300);
+    ESP.restart();
+  }
+  if (changed) {
+    cfgDirtyAt = millis() | 1;                   // у флеш запишемо через 10 с тиші, щоб не писати на кожен рух повзунка
+    mqttDirty = true;
+  }
+}
+
+void mqttSetup() {
+  const uint64_t mac = ESP.getEfuseMac();
+  snprintf(mqttId, sizeof(mqttId), "alertmap_%02x%02x%02x", (uint8_t)(mac >> 24), (uint8_t)(mac >> 32), (uint8_t)(mac >> 40));
+  mqttBase = String("alertmap/") + mqttId;
+  mqtt.setBufferSize(2048);                      // конфігурація списку анімацій займає близько 1 КБ
+  mqtt.setKeepAlive(30);
+  mqtt.setSocketTimeout(5);
+  mqtt.setCallback(mqttCallback);
+}
+
+// Викликається з netTask кілька разів на секунду
+static void mqttService() {
+  static uint32_t nextTry = 0;
+
+  xSemaphoreTake(mux, portMAX_DELAY);
+  const String host = cfg.mqttHost, user = cfg.mqttUser, pass = cfg.mqttPass;
+  const uint16_t port = cfg.mqttPort;
+  xSemaphoreGive(mux);
+
+  if (mqttReconf) {
+    mqttReconf = false;
+    if (mqtt.connected()) { mqttPub(mqttBase + "/status", "offline"); mqtt.disconnect(); }
+    nextTry = 0;
+  }
+  if (host.isEmpty()) { mqttOk = false; mqttRc = 0; return; }
+
+  if (!mqtt.connected()) {
+    mqttOk = false;
+    if (nextTry && (int32_t)(millis() - nextTry) < 0) return;
+    nextTry = (millis() + 15000) | 1;
+    strlcpy(mqttHostBuf, host.c_str(), sizeof(mqttHostBuf));
+    // імена на .local (наприклад, homeassistant.local) шукаємо через mDNS
+    if (host.endsWith(".local")) {
+      IPAddress ip = MDNS.queryHost(host.substring(0, host.length() - 6), 2000);
+      if (ip != IPAddress((uint32_t)0)) strlcpy(mqttHostBuf, ip.toString().c_str(), sizeof(mqttHostBuf));
+    }
+    mqtt.setServer(mqttHostBuf, port);
+    const String will = mqttBase + "/status";
+    const bool ok = mqtt.connect(mqttId, user.length() ? user.c_str() : nullptr, user.length() ? pass.c_str() : nullptr,
+                                 will.c_str(), 0, true, "offline");
+    mqttRc = mqtt.state();
+    Serial.printf("[mqtt] %s:%u -> %s (код %d)\n", mqttHostBuf, (unsigned)port, ok ? "підключено" : "помилка", (int)mqttRc);
+    if (!ok) return;
+    mqtt.subscribe((mqttBase + "/+/set").c_str());
+    mqtt.subscribe((mqttBase + "/cmd/+").c_str());
+    mqttDiscovery();
+    mqttPub(will, "online");
+    mqttDirty = false;
+    mqttPublishState(true);
+    mqttOk = true;
+    return;
+  }
+
+  mqtt.loop();
+  const bool force = mqttDirty;
+  mqttDirty = false;
+  mqttPublishState(false);
+  (void)force;
 }
 
 void netTask(void *) {
@@ -370,6 +642,8 @@ void netTask(void *) {
   uint32_t nextOtaAt = millis() + 120000;        // перша автоперевірка через 2 хв після старту
 
   for (;;) {
+    if (!otaBusy && WiFi.status() == WL_CONNECTED) mqttService();
+
     // оновлення з GitHub: за кнопкою або за розкладом
     if (!otaBusy && WiFi.status() == WL_CONNECTED) {
       bool autoDue = (int32_t)(millis() - nextOtaAt) >= 0;
@@ -460,7 +734,7 @@ void netTask(void *) {
 
       Serial.printf("[net] HTTP %d, символів: %u\n", code, (unsigned)(parsed ? n : 0));
     }
-    vTaskDelay(pdMS_TO_TICKS(250));
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
 
@@ -511,8 +785,6 @@ static inline uint8_t tri(uint32_t t, uint32_t periodMs) {
   return (p < half ? p : periodMs - p) * 255UL / half;
 }
 
-#define ALERT_ANIM_COUNT 12
-#define CALM_ANIM_COUNT  9
 
 // Яскравість тривожного світлодіода 0..255. i — номер світлодіода, t — час з урахуванням швидкості
 static uint8_t alertLevel(uint8_t anim, uint16_t i, uint32_t t) {
@@ -645,8 +917,8 @@ void render() {
       else if (uid)           c = 0x060606;
     } else if (m == Mode::Highlight) {
       if (uid && (uid == hlUid || parent == hlUid)) c = scaleColor(0xFFFFFF, blink);
-    } else if (!uid) {
-      c = 0;
+    } else if (!uid || (!cfg.ledOn && !test)) {
+      c = 0;                                     // не прив'язаний або карту вимкнено
     } else if (!hasData && (!connected || lastHttp == 0)) {
       // ще не було жодної відповіді: точка доступу — бірюзове дихання, підключення — синє
       c = apActive ? scaleColor(0x00C8B4, slow) : scaleColor(0x0030FF, slow);
@@ -811,6 +1083,8 @@ void handleState() {
   d["ota"]["st"]     = OTA_NAMES[(uint8_t)ota.st];
   d["ota"]["latest"] = String(ota.latest);
   d["ota"]["msg"]    = String(ota.msg);
+  d["ota"]["stage"]  = (int)otaStage;
+  d["ota"]["pct"]    = (int)otaPct;
   d["err"]    = net.errCnt;
   xSemaphoreGive(mux);
   bool up = WiFi.status() == WL_CONNECTED;
@@ -826,6 +1100,10 @@ void handleState() {
   d["timeOk"] = timeOk();
   d["bright"] = currentBrightness();
   d["test"]   = mode == Mode::Test;
+  d["mqtt"]["on"] = cfg.mqttHost.length() > 0;
+  d["mqtt"]["ok"] = (bool)mqttOk;
+  d["mqtt"]["rc"] = (int)mqttRc;
+  d["ledOn"]  = cfg.ledOn;
   // діагностика світлодіодів
   d["led"]["pin"]    = cfg.ledPin;
   d["led"]["count"]  = strip.numPixels();
@@ -844,6 +1122,12 @@ void handleGetConfig() {
   d["otaRepo"] = cfg.otaRepo;
   xSemaphoreGive(mux);
   d["otaAuto"] = cfg.otaAuto;
+  d["mqttHost"] = cfg.mqttHost;
+  d["mqttPort"] = cfg.mqttPort;
+  d["mqttUser"] = cfg.mqttUser;
+  d["mqttPassSet"] = cfg.mqttPass.length() > 0;
+  d["homeUid"] = cfg.homeUid;
+  d["ledOn"]   = cfg.ledOn;
   // токен повністю не віддаємо — тільки останні 4 символи
   d["tokenSet"]    = t.length() > 0;
   d["tokenTail"]   = t.length() > 4 ? t.substring(t.length() - 4) : String("");
@@ -915,7 +1199,40 @@ void handleSetConfig() {
   }
   if (d["api"].is<int>())      cfg.apiVer    = d["api"].as<int>() == 1 ? 1 : 2;
   if (d["interval"].is<int>()) cfg.intervalS = constrain(d["interval"].as<int>(), 15, 120);
+  // Home Assistant (MQTT)
+  if (d["mqttHost"].is<const char *>()) {
+    String h = d["mqttHost"].as<String>();
+    h.trim();
+    // приймаємо й адресу, скопійовану з браузера: прибираємо http://, шлях і порт
+    int sch = h.indexOf("://");
+    if (sch >= 0) h = h.substring(sch + 3);
+    int sl = h.indexOf('/');
+    if (sl >= 0) h = h.substring(0, sl);
+    int col = h.indexOf(':');
+    if (col >= 0) h = h.substring(0, col);
+    if (h.length() < sizeof(mqttHostBuf) && h != cfg.mqttHost) { cfg.mqttHost = h; mqttReconf = true; }
+  }
+  if (d["mqttPort"].is<int>()) {
+    const uint16_t pt = constrain(d["mqttPort"].as<int>(), 1, 65535);
+    if (pt != cfg.mqttPort) { cfg.mqttPort = pt; mqttReconf = true; }
+  }
+  if (d["mqttUser"].is<const char *>()) {
+    String u = d["mqttUser"].as<String>();
+    u.trim();
+    if (u != cfg.mqttUser) { cfg.mqttUser = u; mqttReconf = true; }
+    if (u.isEmpty()) cfg.mqttPass = "";          // без логіна пароль не потрібен
+  }
+  if (d["mqttPass"].is<const char *>() && strlen(d["mqttPass"].as<const char *>())) {
+    cfg.mqttPass = d["mqttPass"].as<String>();   // порожнє поле — пароль не міняємо
+    mqttReconf = true;
+  }
+  if (d["homeUid"].is<int>()) {
+    const int hu = d["homeUid"].as<int>();
+    cfg.homeUid = (hu > 0 && hu < ALERT_BUF) ? hu : 0;
+  }
   xSemaphoreGive(mux);
+  if (d["ledOn"].is<bool>()) cfg.ledOn = d["ledOn"].as<bool>();
+  mqttDirty = true;
 
   if (d["pin"].is<int>()) {
     uint8_t p = d["pin"].as<int>();
@@ -1182,6 +1499,7 @@ void setup() {
   if (MDNS.begin(MDNS_NAME)) MDNS.addService("http", "tcp", 80);
 
   setupServer();
+  mqttSetup();
   xTaskCreatePinnedToCore(netTask, "net", 16384, nullptr, 1, nullptr, CORE_NET);
   Serial.printf("[sys] %s v%s готово, причина запуску %d, світлодіодів %u на GPIO %u\n", devName, FW_VERSION,
                 (int)esp_reset_reason(), (unsigned)cfg.ledCount, (unsigned)cfg.ledPin);
@@ -1191,5 +1509,7 @@ void loop() {
   server.handleClient();
   if (apActive) dns.processNextRequest();
   wifiWatch();
+  // зміни, що прийшли з Home Assistant, записуємо у флеш через 10 с після останньої
+  if (cfgDirtyAt && millis() - cfgDirtyAt > 10000) { cfgDirtyAt = 0; saveSettings(); }
   delay(2);
 }
