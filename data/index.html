@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- ВЕРСІЯ 2.5.2 · оновлено 26.11.2026 01:12 -->
+<!-- ВЕРСІЯ 2.5.3 · оновлено 26.11.2026 01:22 -->
 <html lang="uk">
 <head>
 <meta charset="utf-8">
@@ -559,7 +559,7 @@ function paintState(){
   const kv=(o)=>Object.entries(o).map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join("");
   const act=R.filter(r=>"ARY".includes(stOf(r[0]))).length, part=R.filter(r=>stOf(r[0])==="P").length;
   $("#kvState").innerHTML=kv({"Останнє оновлення":fmtAge(s.age),"Код відповіді":s.http,"Успішних / помилок":s.ok+" / "+s.err,"Тривога в областях":s.alerts?act+" повністю, "+part+" частково":"—"});
-  $("#kvSys").innerHTML=kv({"Прошивка":"v"+s.ver,"Веб-інтерфейс":"v2.5.2 · 26.11.2026 01:12","Мережа":s.wifi?s.ssid:"—","IP":s.wifi?s.ip:"192.168.4.1","Сигнал":s.wifi?s.rssi+" dBm":"—","Працює":fmtUp(s.uptime),"Чип":s.chip,"Вільна пам'ять":Math.round(s.heap/1024)+" КБ","Час NTP":s.timeOk?"синхронізовано":"—","Яскравість зараз":s.bright,"Світлодіоди":s.led?s.led.count+" шт. на GPIO "+s.led.pin:"—","Кадрів показано":s.led?s.led.frames+(s.led.busy?" (зупинено)":""):"—","Запас стека / причина запуску":s.led?s.led.stack+" / "+s.reset:"—","Збірка":s.build||"—"});
+  $("#kvSys").innerHTML=kv({"Прошивка":"v"+s.ver,"Веб-інтерфейс":"v2.5.3 · 26.11.2026 01:22","Мережа":s.wifi?s.ssid:"—","IP":s.wifi?s.ip:"192.168.4.1","Сигнал":s.wifi?s.rssi+" dBm":"—","Працює":fmtUp(s.uptime),"Чип":s.chip,"Вільна пам'ять":Math.round(s.heap/1024)+" КБ","Час NTP":s.timeOk?"синхронізовано":"—","Яскравість зараз":s.bright,"Світлодіоди":s.led?s.led.count+" шт. на GPIO "+s.led.pin:"—","Кадрів показано":s.led?s.led.frames+(s.led.busy?" (зупинено)":""):"—","Запас стека / причина запуску":s.led?s.led.stack+" / "+s.reset:"—","Збірка":s.build||"—"});
   const o=s.ota||{},ot={checking:"Перевіряю…",uptodate:"Встановлено останню версію (v"+o.latest+").",available:"Доступна версія v"+o.latest+", зараз встановлено v"+s.ver+".",
     installing:"Встановлюю"+(o.msg?": "+o.msg:"… Не вимикайте живлення."),error:"Помилка: "+o.msg};
   $("#otaInfo").textContent=ot[o.st]||"";$("#otaInstall").hidden=o.st!=="available";
